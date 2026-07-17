@@ -6,7 +6,29 @@ Aplicación web para llevar el control completo de tu portafolio de inversiones:
 
 **No necesitas instalar nada.** Descarga `index.html` y ábrelo en cualquier navegador (Chrome, Safari, Edge, Firefox), en computadora o celular.
 
-También puedes publicarla gratis con GitHub Pages: en este repositorio ve a **Settings → Pages → Branch: main → Save** y tendrás la app en línea con una URL propia.
+## 📱 Usarla desde el teléfono (recomendado)
+
+1. Publica la app gratis con **GitHub Pages**: en este repositorio ve a **Settings → Pages**, en *Branch* elige la rama y carpeta `/ (root)`, y pulsa **Save**. En unos minutos tendrás una URL tipo `https://tuusuario.github.io/ALFONINVEST/`.
+2. Abre esa URL en el navegador de tu teléfono.
+3. La app es una **PWA instalable**: en Chrome/Android toca el menú ⋮ → **"Agregar a pantalla de inicio"** (o el aviso de "Instalar app"); en iPhone/Safari toca **Compartir → "Agregar a inicio"**. Queda con su propio ícono, abre a pantalla completa y funciona incluso sin conexión.
+
+## 🏦 Importar tus operaciones de GBM+ (u otro bróker)
+
+GBM no ofrece API pública para clientes, pero en la pestaña **Transacciones → "Importar desde tu bróker"** puedes:
+
+- **Copiar y pegar** la tabla de órdenes ejecutadas / movimientos de GBM+ (o de Excel), o subir un **archivo CSV**.
+- El importador reconoce columnas en cualquier orden, en español o inglés: `fecha`, `tipo/operación` (compra/venta), `emisora/ticker`, `serie`, `títulos/cantidad`, `precio`, `comisión`, y opcionalmente `nombre` y `sector`. Acepta fechas `dd/mm/aaaa`, montos con `$` y comas, etc.
+- Las filas que no son compras/ventas (dividendos, depósitos, retiros) se ignoran solas, y las operaciones repetidas no se duplican aunque importes dos veces.
+- La casilla **".MX"** agrega el sufijo de la BMV/SIC a los tickers para que Yahoo Finance dé los precios **en pesos** (ej. `AAPL.MX`, `NAFTRACISHRS.MX`). Si inviertes en GBM, déjala activada y elige **MXN** en el selector de moneda (arriba a la derecha).
+- Hay un botón para descargar una **plantilla CSV** de ejemplo.
+
+## 💾 ¿Dónde se guardan mis datos?
+
+Todo se guarda **en el navegador del dispositivo donde uses la app** (localStorage): nada sale a ningún servidor y nadie más puede verlo. Eso implica:
+
+- La app "recuerda" tus datos entre sesiones automáticamente, mientras uses **el mismo navegador en el mismo dispositivo**.
+- Computadora y teléfono **no se sincronizan solos**: usa **⬇ Exportar** en un dispositivo y **⬆ Importar** en el otro para pasarte los datos.
+- Haz un respaldo con **⬇ Exportar** de vez en cuando (si borras los datos de navegación, se borra el portafolio).
 
 ## ✨ Funciones
 

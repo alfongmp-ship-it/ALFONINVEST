@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AlfonInvest — Portafolio de Inversiones</title>
+<meta name="theme-color" content="#0d1117">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="AlfonInvest">
 <style>
   :root {
     --bg: #0d1117;
@@ -123,12 +131,15 @@
   /* ---------- Forms ---------- */
   .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; align-items: end; }
   .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 5px; }
-  input, select {
+  input, select, textarea {
     width: 100%; font-family: inherit; font-size: 14px;
     background: var(--bg); color: var(--text);
     border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px;
   }
-  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .check-label { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); cursor: pointer; }
+  .check-label input { width: auto; }
   input[type=number]::-webkit-inner-spin-button { opacity: .3; }
 
   /* ---------- Charts ---------- */
@@ -180,6 +191,10 @@
     </div>
     <div class="header-actions">
       <span class="last-update" id="lastUpdate"></span>
+      <select id="selCurrency" title="Moneda en la que se muestran los montos" style="width:auto">
+        <option value="USD">USD $</option>
+        <option value="MXN">MXN $</option>
+      </select>
       <button id="btnRefresh" title="Actualizar precios en tiempo real">⟳ Actualizar precios</button>
       <button id="btnExport" title="Descargar respaldo JSON">⬇ Exportar</button>
       <button id="btnImport" title="Restaurar respaldo JSON">⬆ Importar</button>
@@ -292,6 +307,23 @@
       </form>
     </div>
     <div class="panel">
+      <h3>Importar desde tu bróker <span class="hint">(GBM+ u otro — CSV o copiar y pegar)</span></h3>
+      <p class="muted-note" style="margin-top:0;margin-bottom:10px">
+        GBM no tiene API pública para clientes, así que la vía es <b>copiar tus movimientos y pegarlos aquí</b>, o subir un archivo CSV.
+        En GBM+ entra a tus órdenes ejecutadas / movimientos, copia la tabla (o descárgala) y pégala abajo.
+        Se reconocen columnas en cualquier orden, en español o inglés: <b>fecha, tipo u operación (compra/venta), emisora o ticker, títulos o cantidad, precio, comisión</b> y opcionalmente nombre y sector.
+      </p>
+      <textarea id="importText" rows="6" placeholder="Pega aquí tus movimientos… Ejemplo:&#10;fecha,operacion,emisora,titulos,precio,comision&#10;15/03/2026,Compra,AAPL,10,3450.50,29.90&#10;02/05/2026,Venta,NAFTRACISHRS,50,121.30,15.00"></textarea>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
+        <button id="btnCsvFile" type="button">📄 Elegir archivo CSV</button>
+        <input type="file" id="csvFile" accept=".csv,.txt,.tsv" style="display:none">
+        <label class="check-label"><input type="checkbox" id="chkMx" checked> Agregar <b>.MX</b> a los tickers (BMV/SIC, precios en pesos)</label>
+        <button id="btnDoImport" type="button" class="primary">⬆ Importar operaciones</button>
+        <button id="btnTemplate" type="button">Descargar plantilla CSV</button>
+      </div>
+      <p class="muted-note">💡 Si compraste en GBM (en pesos), deja activado ".MX" y cambia la moneda a <b>MXN</b> arriba a la derecha. Las filas que no sean compras/ventas (dividendos, depósitos…) se ignoran automáticamente, igual que las operaciones que ya tengas registradas.</p>
+    </div>
+    <div class="panel">
       <h3>Historial de operaciones</h3>
       <div class="table-wrap" id="txTable"></div>
     </div>
@@ -329,7 +361,8 @@ const STORAGE_KEY = "alfoninvest_v1";
 let state = {
   transactions: [],   // {id, type, ticker, name, sector, qty, price, fees, date}
   prices: {},         // ticker -> {price, prevClose, currency, updatedAt, manual}
-  history: []         // {date: 'YYYY-MM-DD', value, cost}
+  history: [],        // {date: 'YYYY-MM-DD', value, cost}
+  settings: { currency: "USD" }
 };
 
 function loadState() {
@@ -340,6 +373,7 @@ function loadState() {
       state.transactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
       state.prices = parsed.prices && typeof parsed.prices === "object" ? parsed.prices : {};
       state.history = Array.isArray(parsed.history) ? parsed.history : [];
+      state.settings = { currency: "USD", ...(parsed.settings || {}) };
     }
   } catch (e) { console.error("Error cargando datos:", e); }
 }
@@ -352,7 +386,7 @@ function saveState() {
    ============================================================ */
 const fmtMoney = n => {
   if (n == null || isNaN(n)) return "—";
-  return n.toLocaleString("es-MX", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n.toLocaleString("es-MX", { style: "currency", currency: state.settings.currency || "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 const fmtNum = (n, d = 4) => {
   if (n == null || isNaN(n)) return "—";
@@ -955,8 +989,176 @@ function loadDemo() {
 }
 
 /* ============================================================
+   IMPORTADOR DE MOVIMIENTOS (GBM+ / CSV / pegado)
+   ============================================================ */
+const normHeader = h => String(h || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, "");
+const HEADER_ALIASES = {
+  date:   ["fecha", "fechaoperacion", "fechadeoperacion", "fechaliquidacion", "date"],
+  type:   ["tipo", "operacion", "tipodeoperacion", "tipooperacion", "movimiento", "concepto", "side", "type"],
+  ticker: ["emisora", "ticker", "simbolo", "symbol", "clave", "instrumento", "activo", "emisoraserie"],
+  serie:  ["serie"],
+  name:   ["nombre", "descripcion", "name", "razonsocial"],
+  sector: ["sector", "categoria", "category"],
+  qty:    ["titulos", "cantidad", "acciones", "numtitulos", "numerodetitulos", "volumen", "qty", "quantity", "shares"],
+  price:  ["precio", "preciounitario", "preciopromedio", "precioejecucion", "precioasignado", "price"],
+  fees:   ["comision", "comisiones", "comisionporcobrar", "comisioniva", "costo", "fees", "fee", "commission"]
+};
+
+function detectDelimiter(line) {
+  if (line.includes("\t")) return "\t";
+  if ((line.match(/;/g) || []).length > (line.match(/,/g) || []).length) return ";";
+  return ",";
+}
+
+function splitCsvLine(line, delim) {
+  const out = [];
+  let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (c === delim && !inQ) { out.push(cur); cur = ""; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out.map(s => s.trim());
+}
+
+function cleanNumber(s) {
+  if (s == null) return NaN;
+  let t = String(s).replace(/[$\s]/g, "").replace(/mxn|usd/gi, "");
+  if (t.includes(",") && t.includes(".")) t = t.replace(/,/g, "");            // 1,234.56
+  else if (/,\d{1,2}$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");   // 1.234,56
+  else t = t.replace(/,/g, "");                                               // 1,234
+  const n = parseFloat(t);
+  return isNaN(n) ? NaN : n;
+}
+
+function cleanDate(s) {
+  const t = String(s || "").trim().slice(0, 10);
+  let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);   // dd/mm/yyyy (formato GBM/México)
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})$/);
+  if (m) return `20${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+
+function parseImportText(text, addMx) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+  if (lines.length < 2) return { error: "Necesito al menos una línea de encabezados y una de datos." };
+
+  const delim = detectDelimiter(lines[0]);
+  const headers = splitCsvLine(lines[0], delim).map(normHeader);
+
+  const colIdx = {};
+  for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+    colIdx[field] = headers.findIndex(h => aliases.includes(h));
+    if (colIdx[field] === -1) colIdx[field] = headers.findIndex(h => aliases.some(a => h.startsWith(a) || a.startsWith(h) && h.length >= 4));
+  }
+  const missing = ["date", "type", "ticker", "qty", "price"].filter(f => colIdx[f] === -1);
+  if (missing.length) {
+    const nombres = { date: "fecha", type: "tipo/operación", ticker: "emisora/ticker", qty: "títulos/cantidad", price: "precio" };
+    return { error: "No encontré estas columnas en los encabezados: " + missing.map(f => nombres[f]).join(", ") + ". Revisa que la primera línea tenga los nombres de las columnas." };
+  }
+
+  const txs = [], skipped = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cells = splitCsvLine(lines[i], delim);
+    const get = f => (colIdx[f] >= 0 ? cells[colIdx[f]] : "");
+
+    const typeRaw = normHeader(get("type"));
+    let type = null;
+    if (/compra|buy/.test(typeRaw)) type = "buy";
+    else if (/venta|sell|vta/.test(typeRaw)) type = "sell";
+    if (!type) { skipped.push(`línea ${i + 1}: tipo "${get("type")}" no es compra/venta`); continue; }
+
+    let ticker = String(get("ticker") || "").toUpperCase().replace(/[*\s]/g, "");
+    const serie = String(get("serie") || "").toUpperCase().replace(/[*\s]/g, "");
+    if (serie) ticker += serie;
+    if (!ticker) { skipped.push(`línea ${i + 1}: sin ticker`); continue; }
+    if (addMx && !ticker.includes(".")) ticker += ".MX";
+
+    const qty = cleanNumber(get("qty"));
+    const price = cleanNumber(get("price"));
+    const date = cleanDate(get("date"));
+    if (!(qty > 0) || !(price >= 0) || !date) { skipped.push(`línea ${i + 1}: fecha/cantidad/precio inválidos`); continue; }
+
+    const fees = colIdx.fees >= 0 ? (cleanNumber(get("fees")) || 0) : 0;
+    txs.push({
+      id: uid(), type, ticker, date, qty, price, fees: Math.abs(fees),
+      name: String(get("name") || "").trim(),
+      sector: String(get("sector") || "").trim() || "Otro"
+    });
+  }
+  return { txs, skipped };
+}
+
+function runImport() {
+  const text = document.getElementById("importText").value.trim();
+  if (!text) { toast("Pega tus movimientos o elige un archivo CSV primero."); return; }
+  const addMx = document.getElementById("chkMx").checked;
+  const res = parseImportText(text, addMx);
+  if (res.error) { toast("❌ " + res.error, 6000); return; }
+  if (!res.txs.length) { toast("No encontré compras/ventas válidas en el texto. " + (res.skipped[0] || ""), 6000); return; }
+
+  const existing = new Set(state.transactions.map(t => `${t.date}|${t.type}|${t.ticker}|${t.qty}|${t.price}`));
+  const nuevos = res.txs.filter(t => !existing.has(`${t.date}|${t.type}|${t.ticker}|${t.qty}|${t.price}`));
+  const dups = res.txs.length - nuevos.length;
+
+  if (!nuevos.length) { toast(`Las ${res.txs.length} operaciones ya estaban registradas — nada que importar.`, 5000); return; }
+  const resumen = `Se importarán ${nuevos.length} operaciones` +
+    (dups ? ` (${dups} duplicadas se omiten)` : "") +
+    (res.skipped.length ? ` — ${res.skipped.length} filas ignoradas (no eran compras/ventas)` : "") +
+    `.\n\nEjemplo: ${nuevos[0].type === "buy" ? "Compra" : "Venta"} de ${nuevos[0].qty} ${nuevos[0].ticker} @ ${nuevos[0].price} el ${nuevos[0].date}.\n\n¿Continuar?`;
+  if (!confirm(resumen)) return;
+
+  state.transactions.push(...nuevos);
+  saveState();
+  renderAll();
+  document.getElementById("importText").value = "";
+  toast(`✅ ${nuevos.length} operaciones importadas` + (dups ? ` · ${dups} duplicadas omitidas` : ""));
+  refreshPrices(true);
+}
+
+/* ============================================================
    EVENTOS
    ============================================================ */
+document.getElementById("btnCsvFile").addEventListener("click", () => document.getElementById("csvFile").click());
+document.getElementById("csvFile").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    document.getElementById("importText").value = reader.result;
+    toast("Archivo cargado — revisa el contenido y pulsa ⬆ Importar operaciones.");
+  };
+  reader.readAsText(file);
+  e.target.value = "";
+});
+document.getElementById("btnDoImport").addEventListener("click", runImport);
+document.getElementById("btnTemplate").addEventListener("click", () => {
+  const csv = "fecha,operacion,emisora,titulos,precio,comision,nombre,sector\n" +
+    "15/03/2026,Compra,AAPL,10,3450.50,29.90,Apple,Tecnología\n" +
+    "20/04/2026,Compra,NAFTRACISHRS,50,118.20,15.00,Naftrac (IPC),ETF / Índice\n" +
+    "02/05/2026,Venta,AAPL,4,3610.00,29.90,Apple,Tecnología\n";
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "plantilla_alfoninvest.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById("selCurrency").addEventListener("change", e => {
+  state.settings.currency = e.target.value;
+  saveState();
+  renderAll();
+  toast("Montos mostrados en " + e.target.value);
+});
+
 document.querySelectorAll(".tab").forEach(tab => {
   tab.addEventListener("click", () => {
     document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
@@ -1039,8 +1241,14 @@ document.getElementById("fileImport").addEventListener("change", e => {
    ============================================================ */
 loadState();
 document.getElementById("fDate").value = todayStr();
+document.getElementById("selCurrency").value = state.settings.currency || "USD";
 renderAll();
 if (state.transactions.length) refreshPrices(true);
+
+// PWA: permite instalar la app en el teléfono y usarla sin conexión
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
 </script>
 </body>
 </html>
