@@ -194,6 +194,17 @@
   .price-input { width: 90px; text-align: right; padding: 5px 8px; font-size: 13px; }
   .fx-input { width: 80px; text-align: right; padding: 5px 8px; font-size: 13px; }
   .muted-note { font-size: 12px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+  .lock-screen { position: fixed; inset: 0; z-index: 9999; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .lock-box { width: 100%; max-width: 380px; text-align: center; }
+  .lock-box .logo-icon { margin: 0 auto 18px; width: 54px; height: 54px; font-size: 26px; }
+  .lock-box h2 { font-size: 26px; margin-bottom: 10px; }
+  .lock-box h2 span { color: var(--accent); }
+  .lock-box p { color: var(--text-dim); font-size: 14px; line-height: 1.6; margin-bottom: 18px; }
+  .lock-box input { width: 100%; margin-bottom: 10px; text-align: center; font-size: 16px; padding: 12px; }
+  .lock-box button { width: 100%; padding: 12px; font-size: 15px; }
+  .lock-err { color: var(--red); font-size: 13px; min-height: 18px; margin-top: 10px; }
+  .lock-box .muted-note { text-align: left; }
   tr.clickable { cursor: pointer; }
   tr.clickable:hover td { background: rgba(88, 166, 255, .08); }
   tr.row-active td { background: rgba(88, 166, 255, .14); }
@@ -201,6 +212,22 @@
 </style>
 </head>
 <body>
+
+<div class="lock-screen" id="lockScreen" style="display:none">
+  <div class="lock-box">
+    <div class="logo-icon">A</div>
+    <h2>Alfon<span>Invest</span></h2>
+    <p id="lockMsg"></p>
+    <form id="lockForm" autocomplete="on">
+      <input type="password" id="lockPass" placeholder="Contraseña" autocomplete="current-password">
+      <input type="password" id="lockPass2" placeholder="Repite la contraseña" autocomplete="new-password" style="display:none">
+      <button type="submit" class="primary" id="lockBtn">Abrir</button>
+    </form>
+    <div class="lock-err" id="lockErr"></div>
+    <div class="muted-note" id="lockHelp"></div>
+  </div>
+</div>
+
 <div class="container">
 
   <header>
@@ -215,6 +242,7 @@
         <option value="MXN">Ver en MXN $</option>
         <option value="USD">Ver en USD $</option>
       </select>
+      <button id="btnLock" title="Proteger con contraseña">🔓</button>
       <button id="btnRefresh" title="Actualizar precios y tipo de cambio">⟳ Actualizar</button>
       <button id="btnExport" title="Descargar respaldo JSON">⬇ Exportar</button>
       <button id="btnImport" title="Restaurar respaldo JSON">⬆ Importar</button>
@@ -276,6 +304,11 @@
     </div>
 
     <div class="acc-grid" id="accCards"></div>
+
+    <div class="panel">
+      <h3>🔐 Seguridad de tus datos</h3>
+      <div id="secPanel"></div>
+    </div>
 
     <div class="panel">
       <h3>Registrar movimiento de dinero <span class="hint">(depósitos, transferencias, rendimientos de Smart Cash…)</span></h3>
@@ -570,11 +603,67 @@ let state = {
   settings: { currency: "MXN", scope: "all" }   // scope: "all" | "g:<grupo>" | <id de cuenta>
 };
 
-function loadState() {
+/* ============================================================
+   CIFRADO EN REPOSO
+   Los datos se guardan cifrados con AES-256-GCM. La llave se deriva
+   de la contraseña con PBKDF2 y vive SOLO en memoria: ni la llave ni
+   la contraseña se escriben nunca en disco. Sin la contraseña, lo que
+   queda en el navegador es ruido — y también lo es cualquier respaldo
+   que exportes o que subas a una nube.
+   ============================================================ */
+const ENC_MARK = "__alfoninvest_enc";
+const KDF_ITER = 600000;               // ~300 ms en un equipo normal
+let sesion = null;                     // { key, salt, iter } — nunca se persiste
+
+const hayCripto = () => !!(window.crypto && window.crypto.subtle);
+
+function aB64(buf) {
+  const u8 = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const deB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+
+async function derivarClave(pass, salt, iter) {
+  const material = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: iter, hash: "SHA-256" },
+    material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+async function cifrarSobre(texto, ses) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, ses.key, new TextEncoder().encode(texto));
+  return { [ENC_MARK]: 1, kdf: "PBKDF2-SHA256", iter: ses.iter,
+           salt: aB64(ses.salt), iv: aB64(iv), ct: aB64(ct) };
+}
+
+// Devuelve { texto, sesion } o lanza si la contraseña no es la correcta
+async function abrirSobre(sobre, pass) {
+  const salt = deB64(sobre.salt), iter = Number(sobre.iter) || KDF_ITER;
+  const key = await derivarClave(pass, salt, iter);
+  let plano;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const p = JSON.parse(raw);
+    plano = await crypto.subtle.decrypt({ name: "AES-GCM", iv: deB64(sobre.iv) }, key, deB64(sobre.ct));
+  } catch { throw new Error("CLAVE_INCORRECTA"); }
+  return { texto: new TextDecoder().decode(plano), sesion: { key, salt, iter } };
+}
+
+async function nuevaSesion(pass) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { key: await derivarClave(pass, salt, KDF_ITER), salt, iter: KDF_ITER };
+}
+
+const esSobre = o => !!(o && o[ENC_MARK]);
+function leerCrudo() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); } catch { return null; }
+}
+
+function loadState(p) {
+  try {
+    if (!p) return;
     state.transactions = Array.isArray(p.transactions) ? p.transactions : [];
     state.cashflows = Array.isArray(p.cashflows) ? p.cashflows : [];
     state.prices = p.prices && typeof p.prices === "object" ? p.prices : {};
@@ -596,8 +685,24 @@ function loadState() {
     state.version = 2;
   } catch (e) { console.error("Error cargando datos:", e); }
 }
+/* Guardar es asíncrono cuando hay contraseña (el cifrado lo es), pero las
+   decenas de llamadas a saveState() en la app son síncronas. Se encolan: cada
+   escritura serializa el estado MÁS RECIENTE, así que basta con una pendiente. */
+let colaGuardado = Promise.resolve(), guardadoPendiente = false;
+
 function saveState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (!sesion) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); return; }
+  if (guardadoPendiente) return;
+  guardadoPendiente = true;
+  colaGuardado = colaGuardado.then(async () => {
+    guardadoPendiente = false;
+    const sobre = await cifrarSobre(JSON.stringify(state), sesion);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sobre));
+  }).catch(err => {
+    guardadoPendiente = false;
+    console.error("Error al guardar cifrado:", err);
+    toast("⚠️ No se pudo guardar: " + err.message, 5000);
+  });
 }
 
 /* ============================================================
@@ -1171,6 +1276,7 @@ function renderAll() {
   renderSelectors();
   renderScope(pf);
   renderBreakdown(pf);
+  renderSeguridad();
   const anyPrice = Object.values(state.prices).map(p => p.updatedAt).filter(Boolean).sort().pop();
   document.getElementById("lastUpdate").textContent =
     anyPrice ? "Últ. act: " + new Date(anyPrice).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "";
@@ -2038,6 +2144,157 @@ function renderBreakdown(pf) {
     haber pasado por varias cuentas.</div>`;
 }
 
+/* ============================================================
+   CANDADO: pantalla de contraseña, bloqueo y panel de seguridad
+   ============================================================ */
+let modoCandado = null;   // "abrir" | "crear" | "cambiar" | "importar"
+let ctxCandado = null;    // datos que espera el modo (el sobre a abrir, etc.)
+
+function mostrarCandado(modo, ctx) {
+  modoCandado = modo; ctxCandado = ctx || null;
+  const textos = {
+    abrir:    ["Escribe tu contraseña para abrir tus datos.", "Abrir", false,
+               "Tus datos están cifrados en este navegador. Sin la contraseña no se pueden leer — tampoco por mí ni por nadie que tome tu computadora."],
+    crear:    ["Elige una contraseña para cifrar tus datos.", "Proteger", true,
+               "⚠️ <b>No hay forma de recuperarla.</b> No se guarda en ningún lado: si la olvidas, tus datos se pierden. Anótala en tu gestor de contraseñas antes de continuar."],
+    cambiar:  ["Elige tu nueva contraseña.", "Cambiar", true,
+               "Se volverán a cifrar todos tus datos con la nueva contraseña. Los respaldos que ya exportaste siguen abriéndose con la anterior."],
+    importar: ["Ese respaldo está cifrado. Escribe la contraseña con la que se creó.", "Restaurar", false,
+               "Es la contraseña que tenías cuando exportaste ese archivo, que puede no ser la de hoy."],
+  };
+  const [msg, btn, doble, ayuda] = textos[modo];
+  document.getElementById("lockMsg").textContent = msg;
+  document.getElementById("lockBtn").textContent = btn;
+  document.getElementById("lockPass2").style.display = doble ? "" : "none";
+  document.getElementById("lockHelp").innerHTML = ayuda;
+  document.getElementById("lockErr").textContent = "";
+  document.getElementById("lockPass").value = "";
+  document.getElementById("lockPass2").value = "";
+  document.getElementById("lockPass").setAttribute("autocomplete", doble ? "new-password" : "current-password");
+  document.getElementById("lockScreen").style.display = "flex";
+  setTimeout(() => document.getElementById("lockPass").focus(), 50);
+}
+
+function ocultarCandado() {
+  document.getElementById("lockScreen").style.display = "none";
+  modoCandado = null; ctxCandado = null;
+}
+
+async function enviarCandado(e) {
+  if (e) e.preventDefault();
+  const err = document.getElementById("lockErr");
+  const pass = document.getElementById("lockPass").value;
+  const pass2 = document.getElementById("lockPass2").value;
+  const btn = document.getElementById("lockBtn");
+  const dobles = ["crear", "cambiar"].includes(modoCandado);
+
+  if (!pass) { err.textContent = "Escribe la contraseña."; return; }
+  if (dobles) {
+    if (pass.length < 8) { err.textContent = "Usa al menos 8 caracteres."; return; }
+    if (pass !== pass2) { err.textContent = "Las dos contraseñas no coinciden."; return; }
+  }
+
+  const etiqueta = btn.textContent;
+  btn.disabled = true; btn.textContent = "Un momento…"; err.textContent = "";
+  await new Promise(r => setTimeout(r, 20));   // deja pintar el botón antes de derivar
+
+  try {
+    if (modoCandado === "abrir" || modoCandado === "importar") {
+      const { texto, sesion: ses } = await abrirSobre(ctxCandado, pass);
+      const datos = JSON.parse(texto);
+      if (modoCandado === "abrir") {
+        sesion = ses;
+        loadState(datos);
+        ocultarCandado();
+        arrancarApp();
+      } else {
+        aplicarRespaldo(datos);              // conserva la contraseña actual, no la del archivo
+        ocultarCandado();
+        toast("✅ Respaldo restaurado");
+      }
+    } else {
+      const era = modoCandado;               // ocultarCandado() lo borra
+      sesion = await nuevaSesion(pass);
+      saveState();
+      ocultarCandado();
+      renderAll();
+      toast(era === "crear" ? "🔒 Datos cifrados con tu contraseña" : "🔒 Contraseña cambiada");
+    }
+  } catch (ex) {
+    err.textContent = ex.message === "CLAVE_INCORRECTA"
+      ? "Contraseña incorrecta." : "No se pudo: " + ex.message;
+  }
+  btn.disabled = false; btn.textContent = etiqueta;
+}
+
+function bloquearAhora() {
+  if (!sesion) return;
+  // Recargar es la forma más limpia de dejar cero rastro en memoria
+  location.reload();
+}
+
+async function quitarContrasena() {
+  if (!confirm("¿Quitar la contraseña?\n\nTus datos quedarán guardados sin cifrar en este navegador, " +
+               "y cualquiera que abra la app en este dispositivo podrá verlos.")) return;
+  sesion = null;
+  saveState();
+  renderAll();
+  toast("Contraseña quitada — los datos ya no están cifrados");
+}
+
+// ---- Bloqueo automático por inactividad ----
+let temporizadorBloqueo = null;
+function reiniciarBloqueo() {
+  clearTimeout(temporizadorBloqueo);
+  const min = Number(state.settings.autoLock) || 0;
+  if (!sesion || !min) return;
+  temporizadorBloqueo = setTimeout(bloquearAhora, min * 60000);
+}
+function setAutoLock(min) {
+  state.settings.autoLock = Number(min) || 0;
+  saveState();
+  reiniciarBloqueo();
+  renderSeguridad();
+  toast(Number(min) ? `Se bloqueará sola tras ${min} min sin usarla` : "Bloqueo automático desactivado");
+}
+
+function renderSeguridad() {
+  const el = document.getElementById("secPanel");
+  const btnLock = document.getElementById("btnLock");
+  if (!hayCripto()) {
+    el.innerHTML = `<div class="muted-note" style="color:var(--yellow)">Este navegador no permite cifrar
+      (hace falta abrir la app por <b>https://</b> o como archivo local). Tus datos se guardan sin cifrar.</div>`;
+    btnLock.style.display = "none";
+    return;
+  }
+  btnLock.style.display = "";
+  btnLock.textContent = sesion ? "🔒" : "🔓";
+  btnLock.title = sesion ? "Bloquear ahora" : "Proteger con contraseña";
+
+  const mins = [0, 5, 15, 30, 60];
+  el.innerHTML = sesion ? `
+    <div class="metric-row"><span>Estado</span><span class="pos"><b>🔒 Cifrado con tu contraseña</b></span></div>
+    <div class="metric-row"><span>Bloqueo automático</span>
+      <select style="width:auto" onchange="setAutoLock(this.value)">
+        ${mins.map(m => `<option value="${m}" ${Number(state.settings.autoLock || 0) === m ? "selected" : ""}>
+          ${m ? m + " minutos sin usarla" : "Nunca"}</option>`).join("")}
+      </select></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+      <button onclick="bloquearAhora()">🔒 Bloquear ahora</button>
+      <button onclick="mostrarCandado('cambiar')">Cambiar contraseña</button>
+      <button class="danger-ghost" onclick="quitarContrasena()">Quitar contraseña</button>
+    </div>
+    <div class="muted-note">Se cifra con AES-256-GCM y la llave se deriva de tu contraseña con PBKDF2
+      (${KDF_ITER.toLocaleString("es-MX")} vueltas). La contraseña no se guarda en ningún lado, así que
+      <b>no se puede recuperar</b>. Los respaldos que exportes también salen cifrados.</div>`
+    : `
+    <div class="metric-row"><span>Estado</span><span style="color:var(--yellow)"><b>🔓 Sin contraseña</b></span></div>
+    <div class="muted-note" style="margin-bottom:14px">Tus datos viven solo en este navegador (no viajan a ningún
+      servidor), pero están sin cifrar: quien abra la app en este dispositivo los ve, y una extensión del navegador
+      puede leerlos. El respaldo que exportas también sale en texto plano.</div>
+    <button class="primary" onclick="mostrarCandado('crear')">🔒 Proteger con contraseña</button>`;
+}
+
 function renderSelectors() {
   const brokerOpts = state.accounts.filter(a => a.type === "broker")
     .map(a => `<option value="${a.id}">${esc(a.name)} (${a.currency})</option>`).join("");
@@ -2464,15 +2721,34 @@ document.getElementById("selCurrency").addEventListener("change", e => {
 // ---- Cortes de patrimonio ----
 document.getElementById("btnSnap").addEventListener("click", guardarCorte);
 
-document.getElementById("btnExport").addEventListener("click", () => {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+// Con contraseña puesta, el respaldo sale cifrado: puedes dejarlo en Drive,
+// mandártelo por correo o subirlo a donde sea sin que se lea.
+document.getElementById("btnExport").addEventListener("click", async () => {
+  const contenido = sesion
+    ? JSON.stringify(await cifrarSobre(JSON.stringify(state), sesion), null, 2)
+    : JSON.stringify(state, null, 2);
+  const blob = new Blob([contenido], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `alfoninvest_respaldo_${todayStr()}.json`;
+  a.download = `alfoninvest_respaldo_${todayStr()}${sesion ? "_cifrado" : ""}.json`;
   a.click();
   URL.revokeObjectURL(a.href);
-  toast("Respaldo descargado 📦");
+  toast(sesion ? "Respaldo cifrado descargado 🔒📦" : "Respaldo descargado 📦 (sin cifrar)");
 });
+
+// Reemplaza el estado con los datos de un respaldo ya descifrado
+function aplicarRespaldo(data) {
+  state = {
+    version: 2,
+    accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
+    transactions: [], cashflows: [], prices: {},
+    fx: { rate: 18.5, updatedAt: null, manual: true },
+    history: [], history_snapshots: [], settings: { currency: "MXN", scope: "all" }
+  };
+  loadState(data);
+  saveState();
+  renderAll();
+}
 
 document.getElementById("btnImport").addEventListener("click", () => document.getElementById("fileImport").click());
 document.getElementById("fileImport").addEventListener("change", e => {
@@ -2482,20 +2758,11 @@ document.getElementById("fileImport").addEventListener("change", e => {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
+      if (esSobre(data)) { mostrarCandado("importar", data); return; }
       if (!Array.isArray(data.transactions) && !Array.isArray(data.cashflows)) throw new Error("Formato inválido");
       const nTx = (data.transactions || []).length, nCf = (data.cashflows || []).length;
       if (!confirm(`El respaldo tiene ${nTx} operaciones y ${nCf} movimientos. Esto reemplazará tus datos actuales. ¿Continuar?`)) return;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      state = {
-        version: 2,
-        accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
-        transactions: [], cashflows: [], prices: {},
-        fx: { rate: 18.5, updatedAt: null, manual: true },
-        history: [], history_snapshots: [], settings: { currency: "MXN", scope: "all" }
-      };
-      loadState();
-      saveState();
-      renderAll();
+      aplicarRespaldo(data);
       toast("✅ Respaldo restaurado");
     } catch (err) { toast("❌ No se pudo leer el archivo: " + err.message, 4500); }
   };
@@ -2506,17 +2773,33 @@ document.getElementById("fileImport").addEventListener("change", e => {
 /* ============================================================
    INICIO
    ============================================================ */
-loadState();
-document.getElementById("fDate").value = todayStr();
-document.getElementById("cfDate").value = todayStr();
-document.getElementById("selCurrency").value = dispCur();
-renderAll();
-syncCfForm();
-{
+function arrancarApp() {
+  document.getElementById("fDate").value = todayStr();
+  document.getElementById("cfDate").value = todayStr();
+  document.getElementById("selCurrency").value = dispCur();
+  renderAll();
+  syncCfForm();
   const ia = acc(document.getElementById("importAccount").value);
   document.getElementById("chkMx").checked = ia?.currency === "MXN";
+  reiniciarBloqueo();
+  if (state.transactions.length || state.cashflows.length) refreshPrices(true);
 }
-if (state.transactions.length || state.cashflows.length) refreshPrices(true);
+
+document.getElementById("lockForm").addEventListener("submit", enviarCandado);
+document.getElementById("btnLock").addEventListener("click", () =>
+  sesion ? bloquearAhora() : mostrarCandado("crear"));
+for (const ev of ["pointerdown", "keydown"]) document.addEventListener(ev, reiniciarBloqueo, true);
+
+{
+  const guardado = leerCrudo();
+  if (esSobre(guardado)) {
+    // Hay datos cifrados: no se arranca nada hasta que la contraseña los abra
+    mostrarCandado("abrir", guardado);
+  } else {
+    loadState(guardado);
+    arrancarApp();
+  }
+}
 
 // PWA: permite instalar la app en el teléfono y usarla sin conexión
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {

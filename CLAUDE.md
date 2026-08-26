@@ -60,6 +60,27 @@ Notas del motor de cálculo (`computePortfolio`):
 - Precios y tipo de cambio (`MXN=X`) vienen de Yahoo Finance vía proxies CORS; un precio
   puesto a mano queda marcado `manual: true` y no se sobrescribe al actualizar.
 
+## Cifrado en reposo
+
+Si el usuario pone contraseña, `localStorage` guarda un **sobre cifrado**:
+
+```js
+{ __alfoninvest_enc: 1, kdf: "PBKDF2-SHA256", iter: 600000, salt, iv, ct }  // todo en base64
+```
+
+AES-256-GCM con llave derivada por PBKDF2-SHA256. La llave vive solo en la variable
+`sesion` (memoria); ni la llave ni la contraseña se escriben nunca. **No hay recuperación.**
+
+- `saveState()` sigue siendo síncrono para sus decenas de llamadas: encola una escritura que
+  serializa el estado más reciente, así que basta con una pendiente (`guardadoPendiente`).
+- `loadState(p)` recibe el objeto ya descifrado; el arranque decide si mostrar el candado.
+- Bloquear = `location.reload()` (deja cero rastro en memoria). Hay bloqueo automático
+  opcional por inactividad (`settings.autoLock`, en minutos).
+- **⬇ Exportar sale cifrado** cuando hay contraseña, y ⬆ Importar detecta el sobre y pide
+  la clave con la que se creó ese archivo (puede no ser la de hoy).
+- Web Crypto funciona en `file://` (es contexto seguro); si no hubiera, la app avisa y
+  guarda en claro.
+
 ## Ámbito de análisis (`settings.scope`)
 
 El selector del encabezado recorta **toda** la app: dashboard, posiciones, operaciones,
