@@ -474,7 +474,7 @@
       <div id="fxChart"></div>
     </div>
     <div class="panel">
-      <h3>¿Te convino convertir a dólares?</h3>
+      <h3>¿Te convino convertir a dólares? <span class="hint">(la moneda y la inversión, por separado)</span></h3>
       <div id="fxCompare"></div>
       <p class="muted-note">⚠️ La comparación con Smart Cash usa el rendimiento anual que indiques como referencia; es una estimación para dimensionar, no un cálculo exacto de lo que habrías ganado.</p>
     </div>
@@ -1430,25 +1430,58 @@ function renderFX(pf) {
     const años = (hoy - new Date(c.date + "T12:00:00")) / (365.25 * 24 * 3600 * 1000);
     alt += c.mxn * Math.pow(1 + tasa / 100, Math.max(0, años));
   }
-  const realMxn = fx.usdConv / fx.baseUsd * fx.valueMxn; // parte del valor atribuible a lo convertido
+  // Tres escenarios sobre EL MISMO dinero convertido, para separar la decisión de
+  // moneda (convertir) de la decisión de inversión (qué compraste con los dólares).
+  const soloDolares = fx.usdConv * fx.rate;                 // convertir y no invertir
+  const realMxn = fx.usdConv / fx.baseUsd * fx.valueMxn;    // convertir e invertir (lo que hiciste)
+  const efectoMoneda = soloDolares - fx.mxnConv;            // costo/beneficio de convertir
+  const efectoInversion = realMxn - soloDolares;            // aporte de lo que compraste
   const dif = realMxn - alt;
+  const escenarios = [
+    { label: `Quedarte en pesos (Smart Cash al ${tasa}%)`, value: alt, color: "var(--text-dim)" },
+    { label: "Convertir a dólares y dejarlos parados", value: soloDolares, color: efectoMoneda >= 0 ? "var(--green)" : "var(--red)" },
+    { label: "Lo que hiciste: convertir e invertir", value: realMxn, color: "var(--accent)" }
+  ];
+  const maxEsc = Math.max(...escenarios.map(e => e.value), fx.mxnConv);
   document.getElementById("fxCompare").innerHTML = `
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
       <span style="font-size:13px;color:var(--text-dim)">Rendimiento anual de referencia si te hubieras quedado en pesos:</span>
       <input id="fxTasa" type="number" step="0.1" min="0" max="50" value="${tasa}" style="width:80px;padding:5px 8px;font-size:13px;text-align:right">
       <span style="font-size:13px;color:var(--text-dim)">% anual</span>
     </div>
-    <div class="metric-row"><span>Lo que convertiste a dólares</span><span>${fmtMoney(fx.mxnConv, "MXN")}</span></div>
-    <div class="metric-row"><span>Vale hoy (invertido en dólares)</span><span>${fmtMoney(realMxn, "MXN")}</span></div>
-    <div class="metric-row"><span>Habría valido en Smart Cash al ${tasa}% anual</span><span>${fmtMoney(alt, "MXN")}</span></div>
-    <div class="metric-row" style="border-bottom:none;font-size:16px">
-      <span><b>Diferencia</b></span>
-      <span class="${signClass(dif)}"><b>${fmtMoney(dif, "MXN")}</b></span></div>
-    <div class="reco ${dif >= 0 ? "good" : "warn"}" style="margin-top:12px">
-      <span class="icon">${dif >= 0 ? "✅" : "🤔"}</span>
+    <p class="muted-note" style="margin-top:0;margin-bottom:14px">
+      Partiendo de los mismos <b>${fmtMoney(fx.mxnConv, "MXN")}</b> que convertiste, así habría terminado cada camino:</p>
+    ${escenarios.map(e => `
+      <div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+          <span>${esc(e.label)}</span>
+          <b style="font-variant-numeric:tabular-nums">${fmtMoney(e.value, "MXN")}</b>
+        </div>
+        <div style="height:16px;background:var(--bg);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${Math.max(2, (e.value / maxEsc) * 100)}%;background:${e.color};opacity:.85"></div>
+        </div>
+      </div>`).join("")}
+    <div style="margin-top:18px">
+      <div class="metric-row"><span>1. Efecto de <b>convertir a dólares</b></span>
+        <span class="${signClass(efectoMoneda)}">${fmtMoney(efectoMoneda, "MXN")}</span></div>
+      <div class="metric-row"><span>2. Efecto de <b>lo que compraste</b> con esos dólares</span>
+        <span class="${signClass(efectoInversion)}">${fmtMoney(efectoInversion, "MXN")}</span></div>
+      <div class="metric-row" style="border-bottom:none;font-size:16px">
+        <span><b>Diferencia contra quedarte en pesos</b></span>
+        <span class="${signClass(dif)}"><b>${fmtMoney(dif, "MXN")}</b></span></div>
+    </div>
+    <div class="reco ${efectoMoneda >= 0 ? "good" : "warn"}" style="margin-top:12px">
+      <span class="icon">${efectoMoneda >= 0 ? "✅" : "⚠️"}</span>
+      <div><b>La decisión de moneda por sí sola te ${efectoMoneda >= 0 ? "favoreció" : "costó"} ${fmtMoney(Math.abs(efectoMoneda), "MXN")}.</b>
+      ${efectoMoneda >= 0
+        ? `El dólar subió de ${fx.avgRate.toFixed(2)} a ${fx.rate.toFixed(2)}, así que tus dólares valen más pesos de los que pagaste.`
+        : `Compraste dólares a ${fx.avgRate.toFixed(2)} en promedio y hoy valen ${fx.rate.toFixed(2)}: si los cambiaras de regreso, recibirías menos pesos de los que pusiste.`}</div>
+    </div>
+    <div class="reco ${dif >= 0 ? "good" : "warn"}">
+      <span class="icon">${dif >= 0 ? "📈" : "🤔"}</span>
       <div>${dif >= 0
-        ? `Convertir a dólares e invertir te ha dejado <b>${fmtMoney(Math.abs(dif), "MXN")} más</b> que si ese dinero se hubiera quedado rindiendo en pesos.`
-        : `Ese dinero habría rendido <b>${fmtMoney(Math.abs(dif), "MXN")} más</b> quedándose en pesos. El peso se fortaleció de ${fx.avgRate.toFixed(2)} a ${fx.rate.toFixed(2)}, y eso se comió parte de lo que ganaron tus inversiones.`}</div>
+        ? `Aun así vas <b>${fmtMoney(Math.abs(dif), "MXN")} arriba</b> de haberte quedado en pesos — pero eso viene de <b>lo que compraste</b> (${fmtMoney(efectoInversion, "MXN")}), no de la moneda.`
+        : `Y sumado a lo demás, ese dinero habría rendido <b>${fmtMoney(Math.abs(dif), "MXN")} más</b> quedándose en pesos.`}</div>
     </div>`;
   document.getElementById("fxTasa").addEventListener("change", e => {
     const v = parseFloat(e.target.value);
