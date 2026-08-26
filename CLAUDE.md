@@ -42,6 +42,7 @@ El usuario puede crear más cuentas (NU, Revolut, Bitso, coleccionables) en MXN 
   cashflows:    [{ id, kind: "deposit"|"withdraw"|"transfer"|"yield"|"fee",
                    from, to, amount, amountTo, date, note }],
   prices:       { TICKER: { price, prevClose, currency, updatedAt, manual } },
+  symbols:      { TICKER: "simbolo-para-buscar" },   // "" = no buscar precio
   fx:           { rate, updatedAt, manual },   // pesos por dólar
   history:      [{ date, valueMXN, aportMXN }],
   history_snapshots: [{ date, accounts: { id: valor }, fx, note }],   // cortes de patrimonio
@@ -62,6 +63,10 @@ Notas del motor de cálculo (`computePortfolio`):
 - **El precio se convierte a la moneda de la cuenta** usando el `currency` que reporte la
   fuente. Sin eso, un precio en dólares dentro de una cuenta en pesos se contaría como si
   fueran pesos. Los precios manuales se toman siempre en la moneda de la cuenta.
+- `state.symbols[ticker]` cambia el símbolo con el que se consulta el precio; `""` apaga la
+  consulta. El nombre de la emisora en la cartera no siempre es el de la fuente
+  (`IVVPESO.MX` da basura, el bueno es `IVVPESOISHRS.MX`), y un coleccionable con un
+  identificador inventado podría chocar con un ticker real. Se edita con la 🔎 de Posiciones.
 - Si el precio se despega más del 50 % del cierre anterior se marca `precioRaro` y sale un
   aviso rojo en el Dashboard: casi siempre es un split que la fuente ya aplicó al precio
   pero no al histórico, o un dato malo, y arrastra el patrimonio entero.

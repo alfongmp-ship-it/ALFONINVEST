@@ -606,6 +606,7 @@ let state = {
   fx: { rate: 18.50, updatedAt: null, manual: true },  // pesos por dólar
   history: [],        // {date, valueMXN, aportMXN}
   history_snapshots: [],  // {date, accounts:{id:valor}, fx, note} — cortes de patrimonio
+  symbols: {},        // ticker -> símbolo con el que buscarlo ("" = no buscar, precio a mano)
   sync: null,         // { owner, repo, path, token, branch, sha, ultima, auto } — nunca se sube
   settings: { currency: "MXN", scope: "all" }   // scope: "all" | "g:<grupo>" | <id de cuenta>
 };
@@ -678,6 +679,7 @@ function loadState(p) {
     state.prices = p.prices && typeof p.prices === "object" ? p.prices : {};
     state.settings = { currency: "MXN", scope: "all", ...(p.settings || {}) };
     state.sync = p.sync && p.sync.token ? p.sync : null;
+    state.symbols = p.symbols && typeof p.symbols === "object" ? p.symbols : {};
     state.history_snapshots = Array.isArray(p.history_snapshots) ? p.history_snapshots : [];
     state.fx = p.fx && p.fx.rate ? p.fx : state.fx;
     state.accounts = Array.isArray(p.accounts) && p.accounts.length ? p.accounts : JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS));
@@ -720,6 +722,8 @@ function saveState() {
    UTILIDADES
    ============================================================ */
 const acc = id => state.accounts.find(a => a.id === id);
+// Símbolo con el que se consulta el precio de un ticker. "" = no consultar.
+const simboloDe = t => { const s = (state.symbols || {})[t]; return s === undefined ? t : s; };
 const dispCur = () => state.settings.currency || "MXN";
 const fxRate = () => Number(state.fx.rate) || 18.5;
 
@@ -1017,7 +1021,10 @@ let refreshing = false;
 async function refreshPrices(silent = false) {
   if (refreshing) return;
   const pf = computePortfolio("all");   // los precios se piden para todas las cuentas, no solo el ámbito
-  const tickers = [...new Set(pf.positions.map(p => p.ticker))];
+  // El nombre que llevas en tu cartera no siempre es el símbolo con el que se
+  // consulta el precio (IVVPESO.MX vs IVVPESOISHRS.MX), y una tarjeta de béisbol
+  // no debe buscarse en ningún lado.
+  const tickers = [...new Set(pf.positions.map(p => p.ticker))].filter(t => simboloDe(t) !== "");
 
   refreshing = true;
   const btn = document.getElementById("btnRefresh");
@@ -1033,7 +1040,7 @@ async function refreshPrices(silent = false) {
   let ok = 0, fail = [];
   if (tickers.length) {
     const results = await Promise.all(tickers.map(t =>
-      state.prices[t]?.manual ? Promise.resolve("manual") : fetchQuote(t)));
+      state.prices[t]?.manual ? Promise.resolve("manual") : fetchQuote(simboloDe(t))));
     results.forEach((q, i) => {
       if (q === "manual") return;
       if (q) { state.prices[tickers[i]] = q; ok++; }
@@ -1480,8 +1487,12 @@ function renderPositions(pf) {
       const vDisp = toDisp(p.value, p.currency);
       const weight = vDisp != null && totalDisp > 0 ? (vDisp / totalDisp) * 100 : null;
       const warn = p.warnings.length ? ` <span title="${esc(p.warnings.join(" "))}" style="cursor:help">⚠️</span>` : "";
+      const sim = simboloDe(p.ticker);
+      const lupa = sim === p.ticker
+        ? `<button class="danger-ghost" style="color:var(--text-dim)" title="Cambiar el símbolo con el que se busca el precio" onclick="cambiarSimbolo('${esc(p.ticker)}')">🔎</button>`
+        : `<button class="danger-ghost" style="color:var(--accent)" title="${sim ? "Busca el precio como " + esc(sim) : "No se busca precio: lo pones a mano"}" onclick="cambiarSimbolo('${esc(p.ticker)}')">🔎 ${sim ? esc(sim) : "manual"}</button>`;
       rows += `<tr>
-        <td class="left"><span class="ticker-badge">${esc(p.ticker)}</span>${warn}<br><small style="color:var(--text-dim)">${esc(p.name)}</small></td>
+        <td class="left"><span class="ticker-badge">${esc(p.ticker)}</span>${warn} ${lupa}<br><small style="color:var(--text-dim)">${esc(p.name)}</small></td>
         <td class="left"><small>${esc(acc(p.account)?.name || p.account)}</small><br><span class="cur-badge">${p.currency}</span></td>
         <td class="left"><span class="sector-tag">${esc(p.sector)}</span></td>
         <td>${fmtNum(p.shares)}</td>
@@ -2637,6 +2648,30 @@ function renderSelectors() {
 /* ============================================================
    ACCIONES
    ============================================================ */
+/* El nombre de la emisora en tu cartera no siempre es el símbolo con el que la
+   fuente de precios la conoce. También sirve para apagar la búsqueda en activos
+   que no cotizan (tarjetas, coleccionables) y que si no chocarían con un ticker real. */
+function cambiarSimbolo(ticker) {
+  const actual = simboloDe(ticker);
+  const txt = prompt(
+    `¿Con qué símbolo se busca el precio de ${ticker}?\n\n` +
+    `Déjalo vacío si este activo no cotiza (tarjetas, coleccionables) y quieres ponerle el precio a mano.\n` +
+    `Escribe "-" para volver al nombre original (${ticker}).`,
+    actual);
+  if (txt === null) return;
+  const v = txt.trim();
+  state.symbols = state.symbols || {};
+  if (v === "-" || v === ticker) delete state.symbols[ticker];
+  else state.symbols[ticker] = v;
+  // El precio viejo vino del símbolo equivocado: no sirve de nada conservarlo
+  if (!state.prices[ticker]?.manual) delete state.prices[ticker];
+  saveState();
+  renderAll();
+  if (v === "" ) toast(`${ticker}: ya no se busca precio, ponlo a mano aquí abajo`);
+  else if (v === "-" || v === ticker) toast(`${ticker}: vuelve a buscarse con su propio nombre`);
+  else { toast(`${ticker} se buscará como ${v} — actualizando…`); refreshPrices(); }
+}
+
 function setManualPrice(ticker, value) {
   const v = parseFloat(value);
   if (isNaN(v) || v <= 0) { delete state.prices[ticker]; }
@@ -3069,7 +3104,8 @@ function aplicarRespaldo(data) {
     accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
     transactions: [], cashflows: [], prices: {},
     fx: { rate: 18.5, updatedAt: null, manual: true },
-    history: [], history_snapshots: [], sync: null, settings: { currency: "MXN", scope: "all" }
+    history: [], history_snapshots: [], symbols: {}, sync: null,
+    settings: { currency: "MXN", scope: "all" }
   };
   loadState(data);
   state.sync = sync;
