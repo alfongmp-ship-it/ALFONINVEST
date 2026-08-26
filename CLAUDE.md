@@ -100,6 +100,11 @@ state.sync = { owner, repo, path, token, branch, sha, ultima, auto }
   (bajar la de la nube o forzar la de aquí). Nunca se pisa en silencio.
 - La subida automática va con rebote de 8 s desde `saveState()`; `aplicandoNube` evita que
   bajar dispare una subida.
+- **Repo recién creado**: no tiene commits, así que la rama por omisión todavía no existe.
+  Al *crear* el archivo se omiten `branch` y `sha` (GitHub usa la suya y hace el commit
+  inicial); solo al *actualizar* se mandan, que es cuando sirven para detectar conflictos.
+- `permissions.push` solo se toma como negativa si viene explícitamente en `false`: con
+  tokens fine-grained el campo puede no venir, y ahí manda lo que responda la subida real.
 - Al conectar se avisa si el repo resulta ser público.
 
 ## Ámbito de análisis (`settings.scope`)

@@ -2232,11 +2232,12 @@ async function nubeSubir({ silencioso = false, forzar = false } = {}) {
       if (!silencioso) toast("⚠️ La copia de la nube cambió desde otro dispositivo. Revisa el aviso de arriba.", 6000);
       return;
     }
+    // En un repo recién creado todavía no existe ninguna rama, así que pedir
+    // `branch` daría 404. Al crear el archivo dejamos que GitHub use la suya.
     const cuerpo = {
       message: `Respaldo ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
       content: aB64Texto(await contenidoParaSubir()),
-      ...(s.branch ? { branch: s.branch } : {}),
-      ...(meta ? { sha: meta.sha } : {}),
+      ...(meta ? { branch: s.branch, sha: meta.sha } : {}),
     };
     const res = await ghFetch(rutaArchivo(), { method: "PUT", body: JSON.stringify(cuerpo) });
     s.sha = res.content.sha;
@@ -2343,7 +2344,9 @@ async function conectarNube() {
                            : "Y NO tienes contraseña puesta: tu portafolio quedaría a la vista de todo el mundo.\n\n") +
                    "¿Aun así quieres usarlo?")) { state.sync = previo; renderNube(); return; }
     }
-    if (!info.permissions?.push) throw new Error(explicarGh(403, ""));
+    // Solo se rechaza si GitHub dice explícitamente que no hay escritura: con
+    // tokens fine-grained el campo puede no venir, y ahí manda la subida real.
+    if (info.permissions && info.permissions.push === false) throw new Error(explicarGh(403, ""));
     const meta = await nubeMeta();
     if (meta) {
       state.sync.sha = meta.sha;
