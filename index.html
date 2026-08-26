@@ -223,6 +223,7 @@
     <button class="tab" data-tab="accounts">🏦 Cuentas</button>
     <button class="tab" data-tab="positions">💼 Posiciones</button>
     <button class="tab" data-tab="transactions">🧾 Operaciones</button>
+    <button class="tab" data-tab="fx">💱 Dólar</button>
     <button class="tab" data-tab="diversification">🎯 Diversificación</button>
   </div>
 
@@ -453,6 +454,29 @@
     <div class="panel">
       <h3>Historial de operaciones</h3>
       <div class="table-wrap" id="txTable"></div>
+    </div>
+  </div>
+
+  <!-- ================= DÓLAR ================= -->
+  <div class="tab-panel" id="panel-fx">
+    <div class="cards" id="fxCards"></div>
+    <div class="panel">
+      <h3>¿De dónde viene tu ganancia? <span class="hint">(inversión vs. tipo de cambio)</span></h3>
+      <div id="fxWaterfall"></div>
+      <p class="muted-note">Tus dólares ganan (o pierden) por dos motivos distintos: porque <b>las acciones suben o bajan</b>, y porque <b>el dólar sube o baja contra el peso</b>. Aquí están separados.</p>
+    </div>
+    <div class="panel">
+      <h3>Tus conversiones de pesos a dólares</h3>
+      <div class="table-wrap" id="fxTable"></div>
+    </div>
+    <div class="panel">
+      <h3>Tipo de cambio de cada compra <span class="hint">(vs. el de hoy)</span></h3>
+      <div id="fxChart"></div>
+    </div>
+    <div class="panel">
+      <h3>¿Te convino convertir a dólares?</h3>
+      <div id="fxCompare"></div>
+      <p class="muted-note">⚠️ La comparación con Smart Cash usa el rendimiento anual que indiques como referencia; es una estimación para dimensionar, no un cálculo exacto de lo que habrías ganado.</p>
     </div>
   </div>
 
@@ -1025,6 +1049,7 @@ function renderAll() {
   renderPositions(pf);
   renderTransactions();
   renderCashflows();
+  renderFX(pf);
   renderDiversification(pf);
   renderSelectors();
   const anyPrice = Object.values(state.prices).map(p => p.updatedAt).filter(Boolean).sort().pop();
@@ -1258,6 +1283,221 @@ function renderCashflows() {
   }
   el.innerHTML = `<table><thead><tr><th class="left">Fecha</th><th class="left">Tipo</th><th class="left">Cuenta(s)</th>
     <th>Monto</th><th class="left">Nota</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/* ============================================================
+   ANÁLISIS CAMBIARIO: separa el resultado de las inversiones
+   del efecto de haber convertido pesos a dólares
+   ============================================================ */
+function computeFX(pf) {
+  // Conversiones MXN -> USD (transferencias entre cuentas de distinta moneda)
+  const convs = state.cashflows
+    .filter(c => c.kind === "transfer" && c.amountTo > 0 &&
+                 acc(c.from)?.currency === "MXN" && acc(c.to)?.currency === "USD")
+    .map(c => ({ date: c.date, mxn: Number(c.amount), usd: Number(c.amountTo),
+                 rate: Number(c.amount) / Number(c.amountTo), note: c.note || "" }))
+    .sort((a, b) => a.date > b.date ? 1 : -1);
+  if (!convs.length) return null;
+
+  const mxnConv = convs.reduce((s, c) => s + c.mxn, 0);
+  const usdConv = convs.reduce((s, c) => s + c.usd, 0);
+  const avgRate = mxnConv / usdConv;
+  const rate = fxRate();
+
+  // Valor actual de todas las cuentas en dólares
+  let usdNow = 0;
+  for (const id of Object.keys(pf.accounts)) {
+    const A = pf.accounts[id];
+    if (A.currency === "USD") usdNow += A.value;
+  }
+  // Dólares que entraron sin una conversión rastreada (depósitos directos en USD)
+  const usdOther = state.cashflows
+    .filter(c => c.kind === "deposit" && acc(c.from)?.currency === "USD")
+    .reduce((s, c) => s + Number(c.amount), 0);
+
+  const baseUsd = usdConv + usdOther;             // dólares aportados
+  const invUsd = usdNow - baseUsd;                // resultado de las inversiones, en USD
+  const invMxn = invUsd * rate;                   // ese resultado valuado hoy en pesos
+  // El efecto cambiario aplica a TODOS los dólares aportados. A los que no tienen una
+  // conversión rastreada se les asigna el tipo de cambio promedio, para que
+  // inversión + tipo de cambio sume exactamente el resultado neto.
+  const fxMxn = baseUsd * (rate - avgRate);
+  const costMxn = mxnConv + usdOther * avgRate;   // costo en pesos de todos los dólares
+  const valueMxn = usdNow * rate;
+  const totalMxn = valueMxn - costMxn;
+
+  return { convs, mxnConv, usdConv, avgRate, rate, usdNow, usdOther, baseUsd,
+           invUsd, invMxn, fxMxn, costMxn, valueMxn, totalMxn,
+           ratePct: (rate / avgRate - 1) * 100 };
+}
+
+function renderFX(pf) {
+  const fx = computeFX(pf);
+  const cards = document.getElementById("fxCards");
+  if (!fx) {
+    cards.innerHTML = `<div class="card" style="grid-column:1/-1"><div class="empty-state">
+      <div class="big">💱</div>Registra transferencias de una cuenta en pesos a una en dólares
+      (indicando los MXN que salieron y los USD que llegaron) y aquí verás el efecto del tipo de cambio.</div></div>`;
+    ["fxWaterfall","fxTable","fxChart","fxCompare"].forEach(id => document.getElementById(id).innerHTML = "");
+    return;
+  }
+  const sube = fx.rate >= fx.avgRate;
+  cards.innerHTML = `
+    <div class="card">
+      <div class="label">Dólares comprados</div>
+      <div class="value">$${fmtNum(fx.usdConv, 2)} <small style="font-size:14px;color:var(--text-dim)">USD</small></div>
+      <div class="sub neutral">te costaron ${fmtMoney(fx.mxnConv, "MXN")}</div>
+    </div>
+    <div class="card">
+      <div class="label">Tu tipo de cambio promedio</div>
+      <div class="value">$${fx.avgRate.toFixed(4)}</div>
+      <div class="sub neutral">pesos por dólar</div>
+    </div>
+    <div class="card">
+      <div class="label">Tipo de cambio hoy</div>
+      <div class="value ${sube ? "pos" : "neg"}">$${fx.rate.toFixed(4)}</div>
+      <div class="sub ${sube ? "pos" : "neg"}">${fmtPct(fx.ratePct)} vs. tu promedio</div>
+    </div>
+    <div class="card" style="border-color:${sube ? "var(--green)" : "var(--red)"}">
+      <div class="label">Efecto del tipo de cambio</div>
+      <div class="value ${signClass(fx.fxMxn)}">${fmtMoney(fx.fxMxn, "MXN")}</div>
+      <div class="sub neutral">${sube ? "el dólar se encareció: te favoreció" : "el peso se fortaleció: te restó"}</div>
+    </div>
+    <div class="card">
+      <div class="label">Resultado de las inversiones</div>
+      <div class="value ${signClass(fx.invUsd)}">$${fmtNum(fx.invUsd, 2)} <small style="font-size:14px;color:var(--text-dim)">USD</small></div>
+      <div class="sub ${signClass(fx.invMxn)}">${fmtMoney(fx.invMxn, "MXN")} a hoy</div>
+    </div>
+    <div class="card" style="border-color:var(--accent)">
+      <div class="label">Resultado neto en pesos</div>
+      <div class="value ${signClass(fx.totalMxn)}">${fmtMoney(fx.totalMxn, "MXN")}</div>
+      <div class="sub ${signClass(fx.totalMxn)}">${fmtPct(fx.costMxn > 0 ? (fx.totalMxn / fx.costMxn) * 100 : null)} sobre lo convertido</div>
+    </div>`;
+
+  // ---- Descomposición ----
+  const partes = [
+    { label: "Pesos que convertiste a dólares", value: fx.costMxn, tipo: "base" },
+    { label: "Resultado de tus inversiones (valuado hoy)", value: fx.invMxn, tipo: "delta" },
+    { label: "Efecto del tipo de cambio", value: fx.fxMxn, tipo: "delta" },
+    { label: "Valor actual en pesos", value: fx.valueMxn, tipo: "total" }
+  ];
+  const maxV = Math.max(...partes.map(p => Math.abs(p.value)));
+  document.getElementById("fxWaterfall").innerHTML = partes.map(p => {
+    const w = Math.max(2, (Math.abs(p.value) / maxV) * 100);
+    const color = p.tipo === "base" ? "var(--text-dim)" : p.tipo === "total" ? "var(--accent)"
+                : (p.value >= 0 ? "var(--green)" : "var(--red)");
+    return `<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
+        <span>${p.tipo === "delta" ? (p.value >= 0 ? "▲ " : "▼ ") : ""}${esc(p.label)}</span>
+        <b class="${p.tipo === "delta" ? signClass(p.value) : ""}" style="font-variant-numeric:tabular-nums">${fmtMoney(p.value, "MXN")}</b>
+      </div>
+      <div style="height:14px;background:var(--bg);border-radius:4px;overflow:hidden">
+        <div style="height:100%;width:${w}%;background:${color};opacity:.85"></div>
+      </div></div>`;
+  }).join("");
+
+  // ---- Tabla de conversiones ----
+  let rows = "";
+  for (const c of fx.convs) {
+    const efecto = c.usd * (fx.rate - c.rate);
+    rows += `<tr>
+      <td class="left">${esc(c.date)}</td>
+      <td>${fmtMoney(c.mxn, "MXN")}</td>
+      <td>$${fmtNum(c.usd, 2)} USD</td>
+      <td><b>${c.rate.toFixed(4)}</b></td>
+      <td class="${signClass(fx.rate - c.rate)}">${fmtPct((fx.rate / c.rate - 1) * 100)}</td>
+      <td class="${signClass(efecto)}">${fmtMoney(efecto, "MXN")}</td>
+    </tr>`;
+  }
+  const efectoTotal = fx.convs.reduce((s, c) => s + c.usd * (fx.rate - c.rate), 0);
+  rows += `<tr style="border-top:2px solid var(--border)">
+    <td class="left"><b>Total</b></td><td><b>${fmtMoney(fx.mxnConv, "MXN")}</b></td>
+    <td><b>$${fmtNum(fx.usdConv, 2)} USD</b></td><td><b>${fx.avgRate.toFixed(4)}</b></td>
+    <td class="${signClass(fx.ratePct)}"><b>${fmtPct(fx.ratePct)}</b></td>
+    <td class="${signClass(efectoTotal)}"><b>${fmtMoney(efectoTotal, "MXN")}</b></td></tr>`;
+  document.getElementById("fxTable").innerHTML = `<table><thead><tr>
+    <th class="left">Fecha</th><th>Pesos que salieron</th><th>Dólares recibidos</th>
+    <th>Tipo de cambio</th><th>vs. hoy</th><th>Efecto en pesos</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+  // ---- Gráfica del tipo de cambio ----
+  document.getElementById("fxChart").innerHTML = fxRateChart(fx);
+
+  // ---- Comparación contra quedarse en pesos ----
+  const tasa = Number(localStorage.getItem("alfoninvest_tasa_ref") || 7);
+  const hoy = new Date();
+  let alt = 0;
+  for (const c of fx.convs) {
+    const años = (hoy - new Date(c.date + "T12:00:00")) / (365.25 * 24 * 3600 * 1000);
+    alt += c.mxn * Math.pow(1 + tasa / 100, Math.max(0, años));
+  }
+  const realMxn = fx.usdConv / fx.baseUsd * fx.valueMxn; // parte del valor atribuible a lo convertido
+  const dif = realMxn - alt;
+  document.getElementById("fxCompare").innerHTML = `
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <span style="font-size:13px;color:var(--text-dim)">Rendimiento anual de referencia si te hubieras quedado en pesos:</span>
+      <input id="fxTasa" type="number" step="0.1" min="0" max="50" value="${tasa}" style="width:80px;padding:5px 8px;font-size:13px;text-align:right">
+      <span style="font-size:13px;color:var(--text-dim)">% anual</span>
+    </div>
+    <div class="metric-row"><span>Lo que convertiste a dólares</span><span>${fmtMoney(fx.mxnConv, "MXN")}</span></div>
+    <div class="metric-row"><span>Vale hoy (invertido en dólares)</span><span>${fmtMoney(realMxn, "MXN")}</span></div>
+    <div class="metric-row"><span>Habría valido en Smart Cash al ${tasa}% anual</span><span>${fmtMoney(alt, "MXN")}</span></div>
+    <div class="metric-row" style="border-bottom:none;font-size:16px">
+      <span><b>Diferencia</b></span>
+      <span class="${signClass(dif)}"><b>${fmtMoney(dif, "MXN")}</b></span></div>
+    <div class="reco ${dif >= 0 ? "good" : "warn"}" style="margin-top:12px">
+      <span class="icon">${dif >= 0 ? "✅" : "🤔"}</span>
+      <div>${dif >= 0
+        ? `Convertir a dólares e invertir te ha dejado <b>${fmtMoney(Math.abs(dif), "MXN")} más</b> que si ese dinero se hubiera quedado rindiendo en pesos.`
+        : `Ese dinero habría rendido <b>${fmtMoney(Math.abs(dif), "MXN")} más</b> quedándose en pesos. El peso se fortaleció de ${fx.avgRate.toFixed(2)} a ${fx.rate.toFixed(2)}, y eso se comió parte de lo que ganaron tus inversiones.`}</div>
+    </div>`;
+  document.getElementById("fxTasa").addEventListener("change", e => {
+    const v = parseFloat(e.target.value);
+    if (v >= 0) { localStorage.setItem("alfoninvest_tasa_ref", v); renderAll(); }
+  });
+}
+
+function fxRateChart(fx) {
+  const pts = [...fx.convs.map(c => ({ date: c.date, rate: c.rate })),
+               { date: todayStr(), rate: fx.rate, hoy: true }];
+  if (pts.length < 2) return '<div class="empty-state">Sin datos suficientes</div>';
+  const w = 720, h = 240, padL = 58, padR = 16, padT = 16, padB = 40;
+  const rates = pts.map(p => p.rate);
+  let min = Math.min(...rates), max = Math.max(...rates);
+  const rango = (max - min) || 1;
+  min -= rango * 0.15; max += rango * 0.15;
+  const t0 = new Date(pts[0].date).getTime(), t1 = new Date(pts[pts.length - 1].date).getTime();
+  const X = d => padL + ((new Date(d).getTime() - t0) / Math.max(1, t1 - t0)) * (w - padL - padR);
+  const Y = r => padT + (1 - (r - min) / (max - min)) * (h - padT - padB);
+
+  let grid = "";
+  for (let g = 0; g <= 3; g++) {
+    const v = min + ((max - min) * g) / 3, y = Y(v);
+    grid += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="#2d333b" stroke-dasharray="3,4"/>
+             <text x="${padL - 8}" y="${y + 4}" text-anchor="end" fill="#8b949e" font-size="11">$${v.toFixed(2)}</text>`;
+  }
+  const avgY = Y(fx.avgRate);
+  const linea = pts.map((p, i) => `${i ? "L" : "M"}${X(p.date).toFixed(1)},${Y(p.rate).toFixed(1)}`).join(" ");
+  const puntos = pts.map(p => {
+    const barato = p.rate < fx.avgRate;
+    return `<circle cx="${X(p.date)}" cy="${Y(p.rate)}" r="${p.hoy ? 6 : 4.5}"
+      fill="${p.hoy ? "var(--accent)" : (barato ? "#3fb950" : "#f85149")}"
+      stroke="#0d1117" stroke-width="1.5">
+      <title>${p.hoy ? "Hoy" : p.date}: $${p.rate.toFixed(4)}</title></circle>`;
+  }).join("");
+  return `<div class="table-wrap"><svg width="100%" viewBox="0 0 ${w} ${h}" style="min-width:520px">
+    ${grid}
+    <line x1="${padL}" y1="${avgY}" x2="${w - padR}" y2="${avgY}" stroke="#d29922" stroke-width="1.5" stroke-dasharray="6,4"/>
+    <text x="${w - padR}" y="${avgY - 6}" text-anchor="end" fill="#d29922" font-size="11">tu promedio $${fx.avgRate.toFixed(4)}</text>
+    <path d="${linea}" fill="none" stroke="#58a6ff" stroke-width="2" opacity=".55"/>
+    ${puntos}
+    <text x="${padL}" y="${h - 12}" fill="#8b949e" font-size="11">${pts[0].date}</text>
+    <text x="${w - padR}" y="${h - 12}" text-anchor="end" fill="#8b949e" font-size="11">hoy</text>
+  </svg></div>
+  <div style="display:flex;gap:16px;font-size:12px;color:var(--text-dim);margin-top:8px;flex-wrap:wrap">
+    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#3fb950;margin-right:5px"></span>compraste barato (bajo tu promedio)</span>
+    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#f85149;margin-right:5px"></span>compraste caro</span>
+    <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#58a6ff;margin-right:5px"></span>tipo de cambio de hoy</span>
+  </div>`;
 }
 
 function renderDiversification(pf) {
