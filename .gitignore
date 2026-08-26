@@ -1,0 +1,25 @@
+# Este repositorio es PÚBLICO (lo requiere GitHub Pages gratuito).
+# Nunca subas aquí estados de cuenta ni respaldos con tus datos financieros.
+
+# Estados de cuenta y documentos del broker
+*.pdf
+estados/
+estados-cuenta/
+movimientos/
+gbm/
+
+# Datos exportados / respaldos del portafolio
+*.csv
+*.tsv
+*.xlsx
+*.xls
+alfoninvest_respaldo_*.json
+respaldo*.json
+
+# Basura del sistema y del editor
+.DS_Store
+Thumbs.db
+node_modules/
+.vscode/
+.idea/
+*.log
