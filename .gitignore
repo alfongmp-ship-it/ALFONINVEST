@@ -8,13 +8,17 @@ estados-cuenta/
 movimientos/
 gbm/
 
-# Datos exportados / respaldos del portafolio
+# Datos exportados / respaldos del portafolio.
+# Se ignora TODO .json salvo los de configuración del proyecto, para que ningún
+# archivo con movimientos financieros termine publicado por accidente.
 *.csv
 *.tsv
 *.xlsx
 *.xls
-alfoninvest_respaldo_*.json
-respaldo*.json
+*.json
+!package.json
+!package-lock.json
+!manifest.webmanifest
 
 # Basura del sistema y del editor
 .DS_Store
