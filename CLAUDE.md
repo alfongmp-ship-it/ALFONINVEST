@@ -59,6 +59,12 @@ Notas del motor de cálculo (`computePortfolio`):
   registrados, cae a un cálculo basado solo en operaciones.
 - Precios y tipo de cambio (`MXN=X`) vienen de Yahoo Finance vía proxies CORS; un precio
   puesto a mano queda marcado `manual: true` y no se sobrescribe al actualizar.
+- **El precio se convierte a la moneda de la cuenta** usando el `currency` que reporte la
+  fuente. Sin eso, un precio en dólares dentro de una cuenta en pesos se contaría como si
+  fueran pesos. Los precios manuales se toman siempre en la moneda de la cuenta.
+- Si el precio se despega más del 50 % del cierre anterior se marca `precioRaro` y sale un
+  aviso rojo en el Dashboard: casi siempre es un split que la fuente ya aplicó al precio
+  pero no al histórico, o un dato malo, y arrastra el patrimonio entero.
 
 ## Cifrado en reposo
 

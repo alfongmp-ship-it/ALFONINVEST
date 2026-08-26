@@ -860,15 +860,32 @@ function computePortfolio(sc) {
   for (const key of Object.keys(posMap)) {
     const p = posMap[key];
     const pi = state.prices[p.ticker];
-    const cur = pi ? Number(pi.price) : null;
+    // El precio viene en la moneda que reporte la fuente, que no siempre es la de
+    // la cuenta. Sin convertir, un precio en dólares se contaría como si fueran
+    // pesos (o al revés) y el valor de la posición saldría disparatado.
+    const monedaPrecio = (pi && !pi.manual && pi.currency) ? pi.currency : p.currency;
+    const conv = v => v == null ? null : convert(Number(v), monedaPrecio, p.currency);
+    const cur = pi ? conv(pi.price) : null;
+    const prevClose = pi ? conv(pi.prevClose) : null;
+    if (monedaPrecio !== p.currency) {
+      p.warnings.push(`El precio de ${p.ticker} viene en ${monedaPrecio} y la cuenta es en ${p.currency}; se convirtió al tipo de cambio de hoy.`);
+    }
     if (p.shares > 0) {
       const avg = p.cost / p.shares;
       const value = cur != null ? cur * p.shares : null;
       if (value == null) hasAllPrices = false;
       const unreal = value != null ? value - p.cost : null;
       const unrealPct = unreal != null && p.cost > 0 ? (unreal / p.cost) * 100 : null;
-      const dayChange = (cur != null && pi.prevClose) ? (cur - pi.prevClose) * p.shares : null;
-      positions.push({ ...p, avg, cur, value, unreal, unrealPct, dayChange });
+      const dayChange = (cur != null && prevClose) ? (cur - prevClose) * p.shares : null;
+      // Un salto enorme contra el cierre anterior casi nunca es el mercado: suele
+      // ser un split que la fuente ya aplicó al precio pero no al histórico, o un
+      // dato malo. Se avisa en vez de enseñar una pérdida inventada como si nada.
+      const salto = (cur != null && prevClose > 0) ? Math.abs(cur / prevClose - 1) : 0;
+      const precioRaro = salto > 0.5;
+      if (precioRaro) {
+        p.warnings.push(`El precio de ${p.ticker} (${fmtNum(cur, 4)}) difiere ${(salto * 100).toFixed(0)}% del cierre anterior (${fmtNum(prevClose, 4)}). Puede ser un split o un dato malo: verifícalo contra tu casa de bolsa y, si hace falta, escríbelo a mano.`);
+      }
+      positions.push({ ...p, avg, cur, prevClose, value, unreal, unrealPct, dayChange, precioRaro });
     } else if (Math.abs(p.realized) > 1e-9 || p.soldProceeds > 0) {
       closed.push(p);
     }
@@ -1349,6 +1366,17 @@ function renderSummary(pf) {
   if (!pf.hasAllPrices) {
     c.innerHTML += `<div class="card" style="grid-column:1/-1;border-color:var(--yellow)">
       <div class="sub" style="color:var(--yellow)">* Faltan precios de algunos activos. Pulsa <b>⟳ Actualizar</b> o escríbelos manualmente en Posiciones.</div></div>`;
+  }
+  // Un precio disparatado arrastra el patrimonio entero: hay que decirlo aquí,
+  // no escondido en un tooltip de otra pestaña.
+  const raros = pf.positions.filter(p => p.precioRaro);
+  if (raros.length) {
+    c.innerHTML += `<div class="card" style="grid-column:1/-1;border-color:var(--red)">
+      <div class="sub" style="color:var(--red)">⚠️ <b>Precio sospechoso</b> en
+      ${raros.map(p => `<b>${esc(p.ticker)}</b> (${fmtMoney(p.cur, p.currency)} vs ${fmtMoney(p.prevClose, p.currency)} del cierre anterior)`).join(", ")}.
+      Un salto así casi nunca es el mercado — suele ser un split o un dato malo de la fuente, y está
+      moviendo tu patrimonio. Compáralo con tu casa de bolsa y, si no cuadra, escribe el precio a mano
+      en <b>💼 Posiciones</b> (se queda fijo y ya no se sobrescribe).</div></div>`;
   }
 }
 
