@@ -2213,7 +2213,8 @@ const deB64Texto = b => new TextDecoder().decode(deB64(String(b).replace(/\s/g, 
 function explicarGh(status, msg) {
   if (status === 401) return "El token no sirve o ya venció. Genera uno nuevo y vuelve a conectar.";
   if (status === 403) return "El token no tiene permiso de escritura. Necesita «Contents: Read and write» sobre ese repositorio.";
-  if (status === 404) return "No encuentro ese repositorio. Revisa el usuario y el nombre, y que el token tenga acceso.";
+  if (status === 404) return "No encuentro ese repositorio. Revisa que el usuario y el nombre estén bien escritos, " +
+    "y sobre todo que al crear el token hayas elegido ese repo en «Only select repositories».";
   if (status === 409) return "CONFLICTO";
   return `GitHub respondió ${status}${msg ? ": " + msg : ""}`;
 }
@@ -2381,7 +2382,7 @@ async function conectarNube() {
       if (!confirm(`⚠️ El repositorio "${owner}/${repo}" es PÚBLICO.\n\n` +
                    (sesion ? "Tu respaldo va cifrado, así que no se puede leer, pero cualquiera podría descargarlo.\n\n"
                            : "Y NO tienes contraseña puesta: tu portafolio quedaría a la vista de todo el mundo.\n\n") +
-                   "¿Aun así quieres usarlo?")) { state.sync = previo; renderNube(); return; }
+                   "¿Aun así quieres usarlo?")) { state.sync = previo; return; }
     }
     // Solo se rechaza si GitHub dice explícitamente que no hay escritura: con
     // tokens fine-grained el campo puede no venir, y ahí manda la subida real.
@@ -2398,8 +2399,11 @@ async function conectarNube() {
     await nubeSubir();
     renderNube();
   } catch (e) {
+    // Reconstruir el panel aquí borraría lo que el usuario acaba de escribir,
+    // incluido un token que GitHub ya no le va a volver a enseñar.
     state.sync = previo;
-    renderNube();
+    const err = document.getElementById("ghError");
+    if (err) err.textContent = e.message;
     toast("❌ " + e.message, 7000);
   }
 }
@@ -2423,6 +2427,11 @@ function setNubeAuto(v) {
 function renderNube() {
   const el = document.getElementById("nubePanel");
   const s = state.sync;
+  const previos = {};
+  for (const id of ["ghOwner", "ghRepo", "ghPath", "ghToken"]) {
+    const campo = document.getElementById(id);
+    if (campo && campo.value) previos[id] = campo.value;
+  }
   if (s && s.token) {
     const cuando = s.ultima ? new Date(s.ultima).toLocaleString("es-MX",
       { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "todavía no";
@@ -2466,11 +2475,17 @@ function renderNube() {
       <div><label>Repositorio privado</label><input id="ghRepo" placeholder="alfoninvest-datos"></div>
       <div><label>Archivo</label><input id="ghPath" value="portafolio.json"></div>
       <div style="grid-column:1/-1"><label>Token de acceso</label>
-        <input id="ghToken" type="password" placeholder="github_pat_..." autocomplete="off"></div>
+        <input id="ghToken" type="password" placeholder="github_pat_..."
+               autocomplete="new-password" name="gh-token-alfoninvest"></div>
     </div>
+    <div class="lock-err" id="ghError"></div>
     <button class="primary" style="margin-top:12px" onclick="conectarNube()">☁️ Conectar y subir</button>
     <div class="muted-note">El token se guarda solo en este dispositivo (cifrado, si pusiste contraseña) y
       nunca se incluye en lo que se sube. Si algún día lo pierdes, bórralo en GitHub y genera otro.</div>`;
+  // Cualquier repintado (guardar, actualizar precios…) no debe tirar lo escrito
+  for (const id of ["ghOwner", "ghRepo", "ghPath", "ghToken"]) {
+    if (previos[id]) document.getElementById(id).value = previos[id];
+  }
 }
 
 /* ============================================================
