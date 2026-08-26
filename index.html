@@ -1208,6 +1208,10 @@ function renderAccounts(pf) {
       <div class="acc-row"><span>Rendimientos</span><span class="${signClass(A.yields)}">${fmtMoney(A.yields, a.currency)}</span></div>
       ${a.type === "broker" ? `<div class="acc-row"><span>G/P (real.+no real.)</span><span class="${signClass(A.unreal + A.realized)}">${fmtMoney(A.unreal + A.realized, a.currency)}</span></div>` : ""}
       <div class="acc-row acc-total"><span>Valor total</span><span>${fmtMoney(A.value, a.currency)}</span></div>
+      ${a.type === "cash" ? `<button style="width:100%;margin-top:10px;font-size:13px"
+        onclick="actualizarSaldo('${a.id}')"
+        title="Escribe el saldo que ves hoy en tu app y la diferencia se registra como rendimiento">
+        ✏️ Poner el saldo de hoy</button>` : ""}
       ${A.cash < -0.01 ? `<div class="muted-note" style="color:var(--yellow)">⚠️ Efectivo negativo: registra los depósitos/transferencias que fondearon tus compras.</div>` : ""}
       ${gains !== 0 && a.type === "cash" ? "" : ""}
     </div>`;
@@ -1839,6 +1843,38 @@ function deleteCashflow(id) {
   saveState();
   renderAll();
   toast("Movimiento eliminado");
+}
+
+/* Cuentas de efectivo (NU, Revolut, Smart Cash): no tienen precios que consultar,
+   así que el saldo se pone a mano y la diferencia se guarda como rendimiento. */
+function actualizarSaldo(id) {
+  const a = acc(id);
+  if (!a) return;
+  const pf = computePortfolio();
+  const actual = pf.accounts[id]?.value || 0;
+  const txt = prompt(
+    `${a.name}: ¿cuánto tienes hoy?\n\n` +
+    `La app trae ${fmtMoney(actual, a.currency)}. Escribe el saldo que ves en tu app ` +
+    `y la diferencia se registra como rendimiento ganado.`,
+    actual.toFixed(2));
+  if (txt === null) return;
+  const nuevo = parseFloat(String(txt).replace(/[$,\s]/g, ""));
+  if (isNaN(nuevo)) { toast("No entendí ese monto."); return; }
+  const dif = +(nuevo - actual).toFixed(2);
+  if (Math.abs(dif) < 0.01) { toast("El saldo ya coincide 👍"); return; }
+  const esRend = confirm(
+    `Diferencia: ${fmtMoney(dif, a.currency)}\n\n` +
+    `Aceptar = es ${dif > 0 ? "rendimiento ganado" : "una comisión o cargo"}.\n` +
+    `Cancelar = es dinero que ${dif > 0 ? "depositaste" : "retiraste"}.`);
+  state.cashflows.push({
+    id: uid(),
+    kind: esRend ? (dif > 0 ? "yield" : "fee") : (dif > 0 ? "deposit" : "withdraw"),
+    from: id, to: null, amount: Math.abs(dif), amountTo: null, date: todayStr(),
+    note: `Ajuste al poner el saldo de hoy (${fmtMoney(actual, a.currency)} → ${fmtMoney(nuevo, a.currency)})`
+  });
+  saveState();
+  renderAll();
+  toast(`✅ ${a.name} actualizada a ${fmtMoney(nuevo, a.currency)}`);
 }
 
 function deleteAccount(id) {
