@@ -1,6 +1,15 @@
 # 📈 AlfonInvest — Control de Inversiones
 
-Aplicación web para llevar el control completo de tu portafolio de inversiones: registra compras y ventas de acciones, sigue tus ganancias en tiempo real y recibe recomendaciones de diversificación.
+Aplicación web para llevar el control completo de tu patrimonio: cuentas de GBM (Smart Cash, Trading MX, Trading USA) y las que quieras agregar (NU, Bitso, Revolut, coleccionables), con compras/ventas, movimientos de dinero, multi-moneda MXN/USD con tipo de cambio en vivo, ganancias en tiempo real y recomendaciones de diversificación.
+
+## 🏦 Estructura de cuentas (flujo GBM)
+
+- **GBM Smart Cash (MXN)** — efectivo con rendimiento: registra ahí tus **Depósitos** desde el banco y los **Rendimientos** que te abona.
+- **GBM Trading MX (MXN)** — inversiones en pesos: fondéala con **Transferencias** desde Smart Cash y registra tus compras con tickers `.MX`.
+- **GBM Trading USA (USD)** — inversiones en dólares: al transferir desde Smart Cash indicas los pesos que salieron y los dólares recibidos, y la app captura el tipo de cambio implícito.
+- Puedes **crear más cuentas** (NU, Revolut, Bitso, tarjetas deportivas…) en MXN o USD, de tipo "efectivo con rendimiento" o "inversiones". Los coleccionables se registran como activos con identificador propio (ej. `JORDAN-PSA10`) y precio manual.
+
+Con los depósitos registrados, la app calcula tu **ganancia global real**: patrimonio actual menos dinero aportado, incluyendo rendimientos de Smart Cash, plusvalías y el efecto del tipo de cambio. El selector "Ver en MXN/USD" convierte todos los totales con el tipo de cambio del mercado (o el que fijes manualmente).
 
 ## 🚀 Cómo usarla
 

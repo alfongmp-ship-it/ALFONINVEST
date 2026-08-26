@@ -108,6 +108,23 @@
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   @media (max-width: 800px) { .grid-2 { grid-template-columns: 1fr; } }
 
+  /* ---------- Account cards ---------- */
+  .acc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .acc-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+  }
+  .acc-card .acc-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 10px; }
+  .acc-card .acc-name { font-weight: 700; font-size: 15px; }
+  .acc-card .acc-type { font-size: 11px; color: var(--text-dim); }
+  .cur-badge {
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    background: var(--bg-card-2); border: 1px solid var(--border); color: var(--accent);
+  }
+  .acc-row { display: flex; justify-content: space-between; font-size: 13px; padding: 4px 0; font-variant-numeric: tabular-nums; }
+  .acc-row span:first-child { color: var(--text-dim); }
+  .acc-total { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 8px; font-weight: 700; font-size: 14px; }
+
   /* ---------- Tables ---------- */
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -116,9 +133,7 @@
   th { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 1px solid var(--border); }
   tbody tr { border-bottom: 1px solid rgba(45,51,59,.5); }
   tbody tr:hover { background: rgba(88,166,255,.04); }
-  .ticker-badge {
-    display: inline-block; font-weight: 700; color: var(--accent);
-  }
+  .ticker-badge { display: inline-block; font-weight: 700; color: var(--accent); }
   .sector-tag {
     display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px;
     background: var(--bg-card-2); border: 1px solid var(--border); color: var(--text-dim);
@@ -177,6 +192,7 @@
   #toast.show { opacity: 1; }
 
   .price-input { width: 90px; text-align: right; padding: 5px 8px; font-size: 13px; }
+  .fx-input { width: 80px; text-align: right; padding: 5px 8px; font-size: 13px; }
   .muted-note { font-size: 12px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
   footer { text-align: center; color: var(--text-dim); font-size: 12px; padding: 20px 0 10px; }
 </style>
@@ -191,11 +207,11 @@
     </div>
     <div class="header-actions">
       <span class="last-update" id="lastUpdate"></span>
-      <select id="selCurrency" title="Moneda en la que se muestran los montos" style="width:auto">
-        <option value="USD">USD $</option>
-        <option value="MXN">MXN $</option>
+      <select id="selCurrency" title="Moneda en la que se muestran los totales" style="width:auto">
+        <option value="MXN">Ver en MXN $</option>
+        <option value="USD">Ver en USD $</option>
       </select>
-      <button id="btnRefresh" title="Actualizar precios en tiempo real">⟳ Actualizar precios</button>
+      <button id="btnRefresh" title="Actualizar precios y tipo de cambio">⟳ Actualizar</button>
       <button id="btnExport" title="Descargar respaldo JSON">⬇ Exportar</button>
       <button id="btnImport" title="Restaurar respaldo JSON">⬆ Importar</button>
       <input type="file" id="fileImport" accept=".json" style="display:none">
@@ -204,8 +220,9 @@
 
   <div class="tabs">
     <button class="tab active" data-tab="dashboard">📊 Dashboard</button>
+    <button class="tab" data-tab="accounts">🏦 Cuentas</button>
     <button class="tab" data-tab="positions">💼 Posiciones</button>
-    <button class="tab" data-tab="transactions">🧾 Transacciones</button>
+    <button class="tab" data-tab="transactions">🧾 Operaciones</button>
     <button class="tab" data-tab="diversification">🎯 Diversificación</button>
   </div>
 
@@ -214,21 +231,118 @@
     <div class="cards" id="summaryCards"></div>
     <div class="grid-2">
       <div class="panel">
+        <h3>Distribución por cuenta</h3>
+        <div id="chartByAccount"></div>
+      </div>
+      <div class="panel">
         <h3>Distribución por activo</h3>
         <div id="chartByAsset"></div>
       </div>
+    </div>
+    <div class="grid-2">
       <div class="panel">
         <h3>Distribución por sector</h3>
         <div id="chartBySector"></div>
       </div>
+      <div class="panel">
+        <h3>G/P por posición <span class="hint">(no realizada, en moneda de cada cuenta)</span></h3>
+        <div id="chartPnL"></div>
+      </div>
     </div>
     <div class="panel">
-      <h3>Ganancia / pérdida por posición <span class="hint">(no realizada)</span></h3>
-      <div id="chartPnL"></div>
-    </div>
-    <div class="panel">
-      <h3>Evolución del portafolio <span class="hint">(se registra un punto por día al actualizar precios)</span></h3>
+      <h3>Evolución del patrimonio <span class="hint">(un punto por día al actualizar; guardado en MXN)</span></h3>
       <div id="chartHistory"></div>
+    </div>
+  </div>
+
+  <!-- ================= CUENTAS ================= -->
+  <div class="tab-panel" id="panel-accounts">
+    <div class="panel" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <b>Tipo de cambio USD/MXN:</b>
+      <input class="fx-input" id="fxRate" type="number" step="any" min="0" title="Pesos por dólar. Se actualiza solo con ⟳, o escríbelo manualmente.">
+      <span class="muted-note" style="margin:0" id="fxInfo"></span>
+    </div>
+
+    <div class="acc-grid" id="accCards"></div>
+
+    <div class="panel">
+      <h3>Registrar movimiento de dinero <span class="hint">(depósitos, transferencias, rendimientos de Smart Cash…)</span></h3>
+      <form id="cfForm">
+        <div class="form-grid">
+          <div class="field">
+            <label>Tipo de movimiento</label>
+            <select id="cfKind">
+              <option value="deposit">Depósito (desde mi banco)</option>
+              <option value="withdraw">Retiro (hacia mi banco)</option>
+              <option value="transfer">Transferencia entre cuentas</option>
+              <option value="yield">Rendimiento / Interés</option>
+              <option value="fee">Comisión / Cargo</option>
+            </select>
+          </div>
+          <div class="field">
+            <label id="cfFromLabel">Cuenta</label>
+            <select id="cfFrom"></select>
+          </div>
+          <div class="field" id="cfToWrap" style="display:none">
+            <label>Cuenta destino</label>
+            <select id="cfTo"></select>
+          </div>
+          <div class="field">
+            <label id="cfAmountLabel">Monto</label>
+            <input id="cfAmount" type="number" step="any" min="0" required placeholder="10000">
+          </div>
+          <div class="field" id="cfAmountToWrap" style="display:none">
+            <label>Monto recibido (otra moneda)</label>
+            <input id="cfAmountTo" type="number" step="any" min="0" placeholder="540.50">
+          </div>
+          <div class="field">
+            <label>Fecha</label>
+            <input id="cfDate" type="date" required>
+          </div>
+          <div class="field">
+            <label>Nota (opcional)</label>
+            <input id="cfNote" placeholder="Aportación quincenal">
+          </div>
+          <div class="field">
+            <button type="submit" class="primary" style="width:100%">＋ Registrar</button>
+          </div>
+        </div>
+      </form>
+      <p class="muted-note">💡 <b>Flujo GBM:</b> registra un <b>Depósito</b> cuando mandas dinero de tu banco a Smart Cash; una <b>Transferencia</b> cuando pasas de Smart Cash a Trading MX o Trading USA (si es a USA, pon los pesos que salieron y los dólares que recibiste); y un <b>Rendimiento</b> cada vez que Smart Cash te abona intereses. Así la app calcula tu ganancia real global, incluyendo el efecto del tipo de cambio.</p>
+    </div>
+
+    <div class="panel">
+      <h3>Historial de movimientos</h3>
+      <div class="table-wrap" id="cfTable"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Agregar cuenta <span class="hint">(NU, Revolut, Bitso, coleccionables…)</span></h3>
+      <form id="accForm">
+        <div class="form-grid">
+          <div class="field">
+            <label>Nombre</label>
+            <input id="accName" placeholder="Bitso, NU, Cartas deportivas…" required>
+          </div>
+          <div class="field">
+            <label>Tipo</label>
+            <select id="accType">
+              <option value="cash">Efectivo con rendimiento</option>
+              <option value="broker">Inversiones (acciones/ETF/cripto/coleccionables)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Moneda</label>
+            <select id="accCurrency">
+              <option value="MXN">MXN — Pesos</option>
+              <option value="USD">USD — Dólares</option>
+            </select>
+          </div>
+          <div class="field">
+            <button type="submit" class="primary" style="width:100%">＋ Crear cuenta</button>
+          </div>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -237,7 +351,7 @@
     <div class="panel">
       <h3>Posiciones abiertas</h3>
       <div class="table-wrap" id="positionsTable"></div>
-      <p class="muted-note">💡 Si un precio no se pudo obtener automáticamente, puedes escribirlo a mano en la columna "Precio actual" y se guardará.</p>
+      <p class="muted-note">💡 Si un precio no se pudo obtener automáticamente (o es un activo sin cotización, como una tarjeta gradeada), escríbelo a mano en "Precio actual" y se guarda. El precio está en la moneda de la cuenta.</p>
     </div>
     <div class="panel">
       <h3>Ganancias realizadas <span class="hint">(por ventas ya ejecutadas)</span></h3>
@@ -245,10 +359,10 @@
     </div>
   </div>
 
-  <!-- ================= TRANSACCIONES ================= -->
+  <!-- ================= OPERACIONES ================= -->
   <div class="tab-panel" id="panel-transactions">
     <div class="panel">
-      <h3>Registrar operación</h3>
+      <h3>Registrar compra / venta</h3>
       <form id="txForm">
         <div class="form-grid">
           <div class="field">
@@ -259,7 +373,11 @@
             </select>
           </div>
           <div class="field">
-            <label>Ticker (símbolo)</label>
+            <label>Cuenta</label>
+            <select id="fAccount"></select>
+          </div>
+          <div class="field">
+            <label>Ticker / Identificador</label>
             <input id="fTicker" placeholder="AAPL, VOO, BTC-USD…" required autocomplete="off" style="text-transform:uppercase">
           </div>
           <div class="field">
@@ -281,15 +399,16 @@
               <option>ETF / Índice</option>
               <option>Renta fija / Bonos</option>
               <option>Criptomonedas</option>
+              <option>Coleccionables</option>
               <option>Otro</option>
             </select>
           </div>
           <div class="field">
-            <label>Cantidad de acciones</label>
+            <label>Cantidad</label>
             <input id="fQty" type="number" step="any" min="0.000001" required placeholder="10">
           </div>
           <div class="field">
-            <label>Precio por acción</label>
+            <label>Precio unitario</label>
             <input id="fPrice" type="number" step="any" min="0" required placeholder="150.00">
           </div>
           <div class="field">
@@ -305,24 +424,32 @@
           </div>
         </div>
       </form>
+      <p class="muted-note">💡 En <b>Trading USA</b> los tickers van sin sufijo (AAPL, VOO) y el precio en dólares. En <b>Trading MX</b> usa el sufijo <b>.MX</b> (NAFTRACISHRS.MX, AMZN.MX) y el precio en pesos. Para tarjetas deportivas u otros coleccionables inventa un identificador (ej. JORDAN-PSA10) y actualiza su valor manualmente en Posiciones.</p>
     </div>
+
     <div class="panel">
       <h3>Importar desde tu bróker <span class="hint">(GBM+ u otro — CSV o copiar y pegar)</span></h3>
       <p class="muted-note" style="margin-top:0;margin-bottom:10px">
-        GBM no tiene API pública para clientes, así que la vía es <b>copiar tus movimientos y pegarlos aquí</b>, o subir un archivo CSV.
-        En GBM+ entra a tus órdenes ejecutadas / movimientos, copia la tabla (o descárgala) y pégala abajo.
+        GBM no tiene API pública para clientes, así que la vía es <b>copiar tus movimientos y pegarlos aquí</b>, subir un CSV, o pasarle tus PDFs a Claude para que te genere el archivo.
         Se reconocen columnas en cualquier orden, en español o inglés: <b>fecha, tipo u operación (compra/venta), emisora o ticker, títulos o cantidad, precio, comisión</b> y opcionalmente nombre y sector.
       </p>
-      <textarea id="importText" rows="6" placeholder="Pega aquí tus movimientos… Ejemplo:&#10;fecha,operacion,emisora,titulos,precio,comision&#10;15/03/2026,Compra,AAPL,10,3450.50,29.90&#10;02/05/2026,Venta,NAFTRACISHRS,50,121.30,15.00"></textarea>
+      <div class="form-grid" style="margin-bottom:10px">
+        <div class="field">
+          <label>Importar a la cuenta</label>
+          <select id="importAccount"></select>
+        </div>
+      </div>
+      <textarea id="importText" rows="6" placeholder="Pega aquí tus movimientos… Ejemplo:&#10;fecha,operacion,emisora,titulos,precio,comision&#10;15/03/2026,Compra,AAPL,10,180.50,1.00&#10;02/05/2026,Venta,AAPL,4,210.00,1.00"></textarea>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">
         <button id="btnCsvFile" type="button">📄 Elegir archivo CSV</button>
         <input type="file" id="csvFile" accept=".csv,.txt,.tsv" style="display:none">
-        <label class="check-label"><input type="checkbox" id="chkMx" checked> Agregar <b>.MX</b> a los tickers (BMV/SIC, precios en pesos)</label>
+        <label class="check-label"><input type="checkbox" id="chkMx"> Agregar <b>.MX</b> a los tickers (BMV/SIC, precios en pesos)</label>
         <button id="btnDoImport" type="button" class="primary">⬆ Importar operaciones</button>
         <button id="btnTemplate" type="button">Descargar plantilla CSV</button>
       </div>
-      <p class="muted-note">💡 Si compraste en GBM (en pesos), deja activado ".MX" y cambia la moneda a <b>MXN</b> arriba a la derecha. Las filas que no sean compras/ventas (dividendos, depósitos…) se ignoran automáticamente, igual que las operaciones que ya tengas registradas.</p>
+      <p class="muted-note">💡 Al elegir una cuenta en pesos, la casilla ".MX" se activa sola. Las filas que no sean compras/ventas se ignoran, y las operaciones repetidas no se duplican.</p>
     </div>
+
     <div class="panel">
       <h3>Historial de operaciones</h3>
       <div class="table-wrap" id="txTable"></div>
@@ -358,23 +485,46 @@
    ============================================================ */
 const STORAGE_KEY = "alfoninvest_v1";
 
+const DEFAULT_ACCOUNTS = [
+  { id: "smart_mxn",  name: "GBM Smart Cash",  type: "cash",   currency: "MXN" },
+  { id: "trading_mx", name: "GBM Trading MX",  type: "broker", currency: "MXN" },
+  { id: "trading_usa",name: "GBM Trading USA", type: "broker", currency: "USD" }
+];
+
 let state = {
-  transactions: [],   // {id, type, ticker, name, sector, qty, price, fees, date}
+  version: 2,
+  accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
+  transactions: [],   // {id, account, type, ticker, name, sector, qty, price, fees, date}
+  cashflows: [],      // {id, kind, from, to, amount, amountTo, date, note}
   prices: {},         // ticker -> {price, prevClose, currency, updatedAt, manual}
-  history: [],        // {date: 'YYYY-MM-DD', value, cost}
-  settings: { currency: "USD" }
+  fx: { rate: 18.50, updatedAt: null, manual: true },  // pesos por dólar
+  history: [],        // {date, valueMXN, aportMXN}
+  settings: { currency: "MXN" }
 };
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      state.transactions = Array.isArray(parsed.transactions) ? parsed.transactions : [];
-      state.prices = parsed.prices && typeof parsed.prices === "object" ? parsed.prices : {};
-      state.history = Array.isArray(parsed.history) ? parsed.history : [];
-      state.settings = { currency: "USD", ...(parsed.settings || {}) };
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    state.transactions = Array.isArray(p.transactions) ? p.transactions : [];
+    state.cashflows = Array.isArray(p.cashflows) ? p.cashflows : [];
+    state.prices = p.prices && typeof p.prices === "object" ? p.prices : {};
+    state.settings = { currency: "MXN", ...(p.settings || {}) };
+    state.fx = p.fx && p.fx.rate ? p.fx : state.fx;
+    state.accounts = Array.isArray(p.accounts) && p.accounts.length ? p.accounts : JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS));
+
+    if (!p.version || p.version < 2) {
+      // Migración v1 -> v2: asignar cuenta a operaciones existentes según el ticker
+      for (const tx of state.transactions) {
+        if (!tx.account) tx.account = /\.MX$/i.test(tx.ticker) ? "trading_mx" : "trading_usa";
+      }
+      state.history = [];
+      if (p.settings && p.settings.currency === "USD") state.settings.currency = "USD";
+    } else {
+      state.history = Array.isArray(p.history) ? p.history : [];
     }
+    state.version = 2;
   } catch (e) { console.error("Error cargando datos:", e); }
 }
 function saveState() {
@@ -384,10 +534,26 @@ function saveState() {
 /* ============================================================
    UTILIDADES
    ============================================================ */
-const fmtMoney = n => {
+const acc = id => state.accounts.find(a => a.id === id);
+const dispCur = () => state.settings.currency || "MXN";
+const fxRate = () => Number(state.fx.rate) || 18.5;
+
+// Convierte un monto entre MXN y USD
+function convert(amount, from, to) {
+  if (amount == null || isNaN(amount)) return null;
+  if (from === to) return amount;
+  if (from === "MXN" && to === "USD") return amount / fxRate();
+  if (from === "USD" && to === "MXN") return amount * fxRate();
+  return amount;
+}
+const toDisp = (amount, from) => convert(amount, from, dispCur());
+
+function fmtMoney(n, cur) {
   if (n == null || isNaN(n)) return "—";
-  return n.toLocaleString("es-MX", { style: "currency", currency: state.settings.currency || "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
+  cur = cur || dispCur();
+  const s = Math.abs(n).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (n < 0 ? "-" : "") + "$" + s + " " + cur;
+}
 const fmtNum = (n, d = 4) => {
   if (n == null || isNaN(n)) return "—";
   return n.toLocaleString("es-MX", { maximumFractionDigits: d });
@@ -398,7 +564,7 @@ const fmtPct = n => {
 };
 const signClass = n => (n > 0.0001 ? "pos" : n < -0.0001 ? "neg" : "neutral");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const uid = () => "tx_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const uid = () => "id_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 function toast(msg, ms = 3200) {
@@ -413,32 +579,34 @@ const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#f778ba", "#a371f7", "#f85149
                  "#39c5cf", "#ffa657", "#7ee787", "#79c0ff", "#d2a8ff", "#ff9bce"];
 
 /* ============================================================
-   MOTOR DE CÁLCULO (costo promedio)
+   MOTOR DE CÁLCULO
    ============================================================ */
 function computePortfolio() {
-  const txs = [...state.transactions].sort((a, b) =>
+  const sortByDate = arr => [...arr].sort((a, b) =>
     a.date === b.date ? (a.id > b.id ? 1 : -1) : (a.date > b.date ? 1 : -1));
 
-  const pos = {}; // ticker -> {shares, cost, name, sector, realized, invested, sold, warnings}
-  for (const tx of txs) {
-    const t = tx.ticker;
-    if (!pos[t]) pos[t] = { ticker: t, shares: 0, cost: 0, name: tx.name || t, sector: tx.sector || "Otro", realized: 0, invested: 0, soldProceeds: 0, warnings: [] };
-    const p = pos[t];
+  // ---- Posiciones por cuenta+ticker (costo promedio) ----
+  const posMap = {};
+  for (const tx of sortByDate(state.transactions)) {
+    const account = acc(tx.account) ? tx.account : (state.accounts.find(a => a.type === "broker")?.id || tx.account);
+    const key = account + "|" + tx.ticker;
+    if (!posMap[key]) posMap[key] = {
+      key, account, ticker: tx.ticker, currency: acc(account)?.currency || "USD",
+      shares: 0, cost: 0, name: tx.name || tx.ticker, sector: tx.sector || "Otro",
+      realized: 0, soldProceeds: 0, warnings: []
+    };
+    const p = posMap[key];
     if (tx.name) p.name = tx.name;
     if (tx.sector) p.sector = tx.sector;
 
-    const qty = Number(tx.qty) || 0;
-    const price = Number(tx.price) || 0;
-    const fees = Number(tx.fees) || 0;
-
+    const qty = Number(tx.qty) || 0, price = Number(tx.price) || 0, fees = Number(tx.fees) || 0;
     if (tx.type === "buy") {
       p.shares += qty;
       p.cost += qty * price + fees;
-      p.invested += qty * price + fees;
     } else {
       let sellQty = qty;
       if (sellQty > p.shares + 1e-9) {
-        p.warnings.push(`Venta de ${qty} el ${tx.date} excede las acciones disponibles; se ajustó a ${fmtNum(p.shares)}.`);
+        p.warnings.push(`Venta de ${qty} el ${tx.date} excede las disponibles; se ajustó a ${fmtNum(p.shares)}.`);
         sellQty = p.shares;
       }
       const avg = p.shares > 0 ? p.cost / p.shares : 0;
@@ -450,57 +618,108 @@ function computePortfolio() {
     }
   }
 
-  const positions = [];
-  const closed = [];
-  let totalValue = 0, totalCost = 0, totalRealized = 0, totalDayChange = 0;
+  const positions = [], closed = [];
   let hasAllPrices = true;
-
-  for (const t of Object.keys(pos)) {
-    const p = pos[t];
-    totalRealized += p.realized;
-    const priceInfo = state.prices[t];
-    const cur = priceInfo ? Number(priceInfo.price) : null;
-
+  for (const key of Object.keys(posMap)) {
+    const p = posMap[key];
+    const pi = state.prices[p.ticker];
+    const cur = pi ? Number(pi.price) : null;
     if (p.shares > 0) {
       const avg = p.cost / p.shares;
       const value = cur != null ? cur * p.shares : null;
+      if (value == null) hasAllPrices = false;
       const unreal = value != null ? value - p.cost : null;
       const unrealPct = unreal != null && p.cost > 0 ? (unreal / p.cost) * 100 : null;
-      let dayChange = null;
-      if (cur != null && priceInfo.prevClose) {
-        dayChange = (cur - priceInfo.prevClose) * p.shares;
-        totalDayChange += dayChange;
-      }
-      if (value != null) totalValue += value; else hasAllPrices = false;
-      totalCost += p.cost;
+      const dayChange = (cur != null && pi.prevClose) ? (cur - pi.prevClose) * p.shares : null;
       positions.push({ ...p, avg, cur, value, unreal, unrealPct, dayChange });
     } else if (Math.abs(p.realized) > 1e-9 || p.soldProceeds > 0) {
       closed.push(p);
     }
   }
+  positions.sort((a, b) => (toDisp(b.value, b.currency) ?? 0) - (toDisp(a.value, a.currency) ?? 0));
 
-  positions.sort((a, b) => (b.value ?? 0) - (a.value ?? 0));
+  // ---- Efectivo y flujos por cuenta ----
+  const accounts = {};
+  for (const a of state.accounts) {
+    accounts[a.id] = { ...a, cash: 0, deposits: 0, withdrawals: 0, yields: 0, fees: 0,
+                       posValue: 0, posCost: 0, realized: 0, unreal: 0, dayChange: 0, hasAllPrices: true };
+  }
+  const ensure = id => accounts[id] || (accounts[id] = { id, name: id, type: "broker", currency: "USD", cash: 0, deposits: 0, withdrawals: 0, yields: 0, fees: 0, posValue: 0, posCost: 0, realized: 0, unreal: 0, dayChange: 0, hasAllPrices: true });
 
-  const totalUnreal = totalValue - totalCost;
-  const totalUnrealPct = totalCost > 0 ? (totalUnreal / totalCost) * 100 : null;
-  const totalReturn = totalUnreal + totalRealized;
-  const totalReturnPct = totalCost > 0 ? (totalReturn / totalCost) * 100 : null;
+  for (const cf of state.cashflows) {
+    const amount = Number(cf.amount) || 0;
+    if (cf.kind === "deposit") { const A = ensure(cf.from); A.cash += amount; A.deposits += amount; }
+    else if (cf.kind === "withdraw") { const A = ensure(cf.from); A.cash -= amount; A.withdrawals += amount; }
+    else if (cf.kind === "yield") { const A = ensure(cf.from); A.cash += amount; A.yields += amount; }
+    else if (cf.kind === "fee") { const A = ensure(cf.from); A.cash -= amount; A.fees += amount; }
+    else if (cf.kind === "transfer") {
+      const A = ensure(cf.from), B = ensure(cf.to);
+      const amountTo = Number(cf.amountTo) || (A.currency === B.currency ? amount : convert(amount, A.currency, B.currency));
+      A.cash -= amount;
+      B.cash += amountTo;
+    }
+  }
+  // Compras restan efectivo; ventas lo suman
+  for (const tx of state.transactions) {
+    const A = ensure(acc(tx.account) ? tx.account : "trading_usa");
+    const qty = Number(tx.qty) || 0, price = Number(tx.price) || 0, fees = Number(tx.fees) || 0;
+    if (tx.type === "buy") A.cash -= qty * price + fees;
+    else A.cash += qty * price - fees;
+  }
+  for (const p of positions) {
+    const A = ensure(p.account);
+    if (p.value != null) { A.posValue += p.value; A.posCost += p.cost; }
+    else A.hasAllPrices = false;
+    if (p.unreal != null) A.unreal += p.unreal;
+    if (p.dayChange != null) A.dayChange += p.dayChange;
+    A.realized += p.realized;
+  }
+  for (const p of closed) ensure(p.account).realized += p.realized;
 
-  return { positions, closed, totalValue, totalCost, totalUnreal, totalUnrealPct,
-           totalRealized, totalReturn, totalReturnPct, totalDayChange, hasAllPrices };
+  // ---- Globales (en moneda de visualización) ----
+  let patrimonio = 0, efectivo = 0, invertido = 0, aportado = 0, retirado = 0,
+      totalUnreal = 0, totalRealized = 0, totalYields = 0, totalFees = 0, totalDayChange = 0, totalPosCost = 0;
+  for (const id of Object.keys(accounts)) {
+    const A = accounts[id];
+    A.value = A.cash + A.posValue;
+    efectivo += toDisp(A.cash, A.currency);
+    invertido += toDisp(A.posValue, A.currency);
+    aportado += toDisp(A.deposits, A.currency);
+    retirado += toDisp(A.withdrawals, A.currency);
+    totalUnreal += toDisp(A.unreal, A.currency);
+    totalRealized += toDisp(A.realized, A.currency);
+    totalYields += toDisp(A.yields, A.currency);
+    totalFees += toDisp(A.fees, A.currency);
+    totalDayChange += toDisp(A.dayChange, A.currency);
+    totalPosCost += toDisp(A.posCost, A.currency);
+    if (!A.hasAllPrices) hasAllPrices = false;
+  }
+  patrimonio = efectivo + invertido;
+  const aportadoNeto = aportado - retirado;
+  const hasCashflows = state.cashflows.some(c => c.kind === "deposit");
+  // Con depósitos registrados: ganancia real global (incluye tipo de cambio).
+  // Sin ellos: ganancia basada solo en operaciones y rendimientos.
+  const ganancia = hasCashflows ? patrimonio - aportadoNeto
+                                : totalUnreal + totalRealized + totalYields - totalFees;
+  const gananciaBase = hasCashflows ? aportadoNeto : totalPosCost;
+  const gananciaPct = gananciaBase > 0 ? (ganancia / gananciaBase) * 100 : null;
+
+  return { positions, closed, accounts, patrimonio, efectivo, invertido, aportadoNeto, hasCashflows,
+           ganancia, gananciaPct, totalUnreal, totalRealized, totalYields, totalFees,
+           totalDayChange, totalPosCost, hasAllPrices };
 }
 
 /* ============================================================
-   PRECIOS EN TIEMPO REAL (Yahoo Finance vía proxies CORS)
+   PRECIOS Y TIPO DE CAMBIO EN TIEMPO REAL (Yahoo vía proxies)
    ============================================================ */
 const CORS_PROXIES = [
   u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-  u => u // intento directo por si el navegador/entorno lo permite
+  u => u
 ];
 
-async function fetchQuote(ticker) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=5d`;
+async function fetchQuote(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
   for (const wrap of CORS_PROXIES) {
     try {
       const res = await fetch(wrap(url), { signal: AbortSignal.timeout(9000) });
@@ -516,7 +735,7 @@ async function fetchQuote(ticker) {
           manual: false
         };
       }
-    } catch (e) { /* probar siguiente proxy */ }
+    } catch (e) { /* siguiente proxy */ }
   }
   return null;
 }
@@ -525,55 +744,65 @@ let refreshing = false;
 async function refreshPrices(silent = false) {
   if (refreshing) return;
   const pf = computePortfolio();
-  const tickers = pf.positions.map(p => p.ticker);
-  if (!tickers.length) { if (!silent) toast("Agrega transacciones primero 🙂"); return; }
+  const tickers = [...new Set(pf.positions.map(p => p.ticker))];
 
   refreshing = true;
   const btn = document.getElementById("btnRefresh");
   btn.disabled = true;
   btn.innerHTML = '<span class="spin">⟳</span> Actualizando…';
 
-  let ok = 0, fail = [];
-  const results = await Promise.all(tickers.map(t => fetchQuote(t)));
-  results.forEach((q, i) => {
-    if (q) { state.prices[tickers[i]] = q; ok++; }
-    else fail.push(tickers[i]);
-  });
+  // Tipo de cambio USD/MXN
+  const fxq = await fetchQuote("MXN=X");
+  if (fxq && fxq.price > 0) {
+    state.fx = { rate: fxq.price, updatedAt: fxq.updatedAt, manual: false };
+  }
 
-  if (ok > 0) recordHistorySnapshot();
+  let ok = 0, fail = [];
+  if (tickers.length) {
+    const results = await Promise.all(tickers.map(t =>
+      state.prices[t]?.manual ? Promise.resolve("manual") : fetchQuote(t)));
+    results.forEach((q, i) => {
+      if (q === "manual") return;
+      if (q) { state.prices[tickers[i]] = q; ok++; }
+      else fail.push(tickers[i]);
+    });
+  }
+
+  recordHistorySnapshot();
   saveState();
   renderAll();
 
   refreshing = false;
   btn.disabled = false;
-  btn.innerHTML = "⟳ Actualizar precios";
+  btn.innerHTML = "⟳ Actualizar";
 
   if (!silent) {
-    if (fail.length === 0) toast(`✅ Precios actualizados (${ok} activos)`);
-    else if (ok > 0) toast(`Actualizados ${ok}. Sin datos para: ${fail.join(", ")} — puedes ponerlos manualmente en Posiciones.`);
-    else toast("No se pudieron obtener precios (¿sin internet?). Escríbelos manualmente en la pestaña Posiciones.", 5000);
+    if (!tickers.length) toast(fxq ? "✅ Tipo de cambio actualizado" : "Sin conexión para actualizar.");
+    else if (fail.length === 0) toast(`✅ Actualizados ${ok} precios y el tipo de cambio`);
+    else if (ok > 0) toast(`Actualizados ${ok}. Sin datos para: ${fail.join(", ")} — ponlos manualmente en Posiciones.`, 5000);
+    else toast("No se pudieron obtener precios (¿sin internet?). Puedes ponerlos manualmente en Posiciones.", 5000);
   }
 }
 
 function recordHistorySnapshot() {
   const pf = computePortfolio();
-  if (!pf.hasAllPrices || pf.totalValue <= 0) return;
+  if (pf.patrimonio <= 0) return;
+  const valueMXN = convert(pf.patrimonio, dispCur(), "MXN");
+  const aportMXN = convert(pf.hasCashflows ? pf.aportadoNeto : pf.totalPosCost, dispCur(), "MXN");
   const d = todayStr();
-  const point = { date: d, value: +pf.totalValue.toFixed(2), cost: +pf.totalCost.toFixed(2) };
+  const point = { date: d, valueMXN: +valueMXN.toFixed(2), aportMXN: +aportMXN.toFixed(2) };
   const idx = state.history.findIndex(h => h.date === d);
   if (idx >= 0) state.history[idx] = point; else state.history.push(point);
   state.history.sort((a, b) => a.date > b.date ? 1 : -1);
   if (state.history.length > 730) state.history = state.history.slice(-730);
 }
 
-// Auto-actualización cada 60 segundos
-setInterval(() => { if (state.transactions.length) refreshPrices(true); }, 60000);
+setInterval(() => { if (state.transactions.length || state.cashflows.length) refreshPrices(true); }, 60000);
 
 /* ============================================================
    GRÁFICAS SVG (sin librerías externas)
    ============================================================ */
 function donutChart(items, size = 190) {
-  // items: [{label, value, color}]
   const total = items.reduce((s, i) => s + i.value, 0);
   if (total <= 0) return '<div class="empty-state">Sin datos aún</div>';
   const cx = size / 2, cy = size / 2, r = size / 2 - 8, rInner = r * 0.62;
@@ -584,7 +813,7 @@ function donutChart(items, size = 190) {
     const large = frac > 0.5 ? 1 : 0;
     if (frac >= 0.99999) {
       paths += `<circle cx="${cx}" cy="${cy}" r="${(r + rInner) / 2}" fill="none" stroke="${it.color}" stroke-width="${r - rInner}"/>`;
-    } else {
+    } else if (frac > 0.0005) {
       const x1 = cx + r * Math.cos(angle), y1 = cy + r * Math.sin(angle);
       const x2 = cx + r * Math.cos(a2), y2 = cy + r * Math.sin(a2);
       const x3 = cx + rInner * Math.cos(a2), y3 = cy + rInner * Math.sin(a2);
@@ -602,10 +831,9 @@ function donutChart(items, size = 190) {
 }
 
 function barChartPnL(items) {
-  // items: [{label, value}] — barras horizontales +/-
   if (!items.length) return '<div class="empty-state">Sin datos aún</div>';
   const maxAbs = Math.max(...items.map(i => Math.abs(i.value)), 0.01);
-  const rowH = 30, labelW = 80, valueW = 110;
+  const rowH = 30, labelW = 120, valueW = 130;
   const w = 700, h = items.length * rowH + 6;
   const barArea = w - labelW - valueW;
   const zeroX = labelW + barArea / 2;
@@ -616,18 +844,18 @@ function barChartPnL(items) {
     const x = it.value >= 0 ? zeroX : zeroX - len;
     const color = it.value >= 0 ? "var(--green)" : "var(--red)";
     svg += `<text x="${labelW - 8}" y="${y + 14}" text-anchor="end" fill="#e6edf3" font-size="12" font-weight="700">${esc(it.label)}</text>`;
-    svg += `<rect x="${x}" y="${y}" width="${Math.max(len, 1)}" height="${rowH - 10}" rx="4" fill="${color}" opacity="0.85"><title>${esc(it.label)}: ${fmtMoney(it.value)}</title></rect>`;
-    svg += `<text x="${it.value >= 0 ? zeroX + len + 6 : zeroX - len - 6}" y="${y + 14}" text-anchor="${it.value >= 0 ? "start" : "end"}" fill="${it.value >= 0 ? "#3fb950" : "#f85149"}" font-size="12">${fmtMoney(it.value)}</text>`;
+    svg += `<rect x="${x}" y="${y}" width="${Math.max(len, 1)}" height="${rowH - 10}" rx="4" fill="${color}" opacity="0.85"><title>${esc(it.label)}: ${fmtMoney(it.value, it.cur)}</title></rect>`;
+    svg += `<text x="${it.value >= 0 ? zeroX + len + 6 : zeroX - len - 6}" y="${y + 14}" text-anchor="${it.value >= 0 ? "start" : "end"}" fill="${it.value >= 0 ? "#3fb950" : "#f85149"}" font-size="11">${fmtMoney(it.value, it.cur)}</text>`;
   });
   return `<div class="table-wrap"><svg width="100%" viewBox="0 0 ${w} ${h}" style="min-width:520px">${svg}</svg></div>`;
 }
 
 function lineChart(history) {
   if (history.length < 2) {
-    return `<div class="empty-state"><div class="big">📈</div>Aún no hay suficiente historial.<br>Cada día que actualices precios se registra un punto automáticamente.</div>`;
+    return `<div class="empty-state"><div class="big">📈</div>Aún no hay suficiente historial.<br>Cada día que actualices se registra un punto automáticamente.</div>`;
   }
-  const w = 720, h = 220, padL = 60, padR = 14, padT = 12, padB = 26;
-  const vals = history.flatMap(p => [p.value, p.cost]);
+  const w = 720, h = 220, padL = 70, padR = 14, padT = 12, padB = 26;
+  const vals = history.flatMap(p => [p.valueMXN, p.aportMXN]);
   let min = Math.min(...vals), max = Math.max(...vals);
   if (max - min < 1) { max += 1; min -= 1; }
   const range = max - min;
@@ -640,28 +868,27 @@ function lineChart(history) {
     const v = min + ((max - min) * g) / 3;
     const y = Y(v);
     grid += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="#2d333b" stroke-width="1" stroke-dasharray="3,4"/>
-             <text x="${padL - 8}" y="${y + 4}" text-anchor="end" fill="#8b949e" font-size="11">${fmtMoney(v)}</text>`;
+             <text x="${padL - 8}" y="${y + 4}" text-anchor="end" fill="#8b949e" font-size="10">${fmtMoney(v, "MXN")}</text>`;
   }
   const line = pts => pts.map((p, i) => `${i ? "L" : "M"}${X(i).toFixed(1)},${Y(p).toFixed(1)}`).join(" ");
-  const valuePath = line(history.map(p => p.value));
-  const costPath = line(history.map(p => p.cost));
+  const valuePath = line(history.map(p => p.valueMXN));
+  const costPath = line(history.map(p => p.aportMXN));
   const areaPath = valuePath + ` L${X(history.length - 1)},${Y(min)} L${X(0)},${Y(min)} Z`;
 
-  const first = history[0].date, last = history[history.length - 1].date;
   const lastP = history[history.length - 1];
-  const up = lastP.value >= lastP.cost;
+  const up = lastP.valueMXN >= lastP.aportMXN;
 
   return `<div class="table-wrap"><svg width="100%" viewBox="0 0 ${w} ${h}" style="min-width:520px">
     ${grid}
     <path d="${areaPath}" fill="${up ? "rgba(63,185,80,.12)" : "rgba(248,81,73,.12)"}"/>
     <path d="${costPath}" fill="none" stroke="#8b949e" stroke-width="1.5" stroke-dasharray="5,5"/>
     <path d="${valuePath}" fill="none" stroke="${up ? "#3fb950" : "#f85149"}" stroke-width="2.5"/>
-    <text x="${padL}" y="${h - 8}" fill="#8b949e" font-size="11">${first}</text>
-    <text x="${w - padR}" y="${h - 8}" text-anchor="end" fill="#8b949e" font-size="11">${last}</text>
+    <text x="${padL}" y="${h - 8}" fill="#8b949e" font-size="11">${history[0].date}</text>
+    <text x="${w - padR}" y="${h - 8}" text-anchor="end" fill="#8b949e" font-size="11">${lastP.date}</text>
   </svg></div>
   <div style="display:flex;gap:18px;font-size:12px;color:var(--text-dim);margin-top:6px">
-    <span><span style="display:inline-block;width:18px;border-top:2.5px solid ${up ? "#3fb950" : "#f85149"};vertical-align:middle;margin-right:5px"></span>Valor del portafolio</span>
-    <span><span style="display:inline-block;width:18px;border-top:2px dashed #8b949e;vertical-align:middle;margin-right:5px"></span>Costo invertido</span>
+    <span><span style="display:inline-block;width:18px;border-top:2.5px solid ${up ? "#3fb950" : "#f85149"};vertical-align:middle;margin-right:5px"></span>Patrimonio total</span>
+    <span><span style="display:inline-block;width:18px;border-top:2px dashed #8b949e;vertical-align:middle;margin-right:5px"></span>Dinero aportado</span>
   </div>`;
 }
 
@@ -681,84 +908,98 @@ function scoreGauge(score) {
 }
 
 /* ============================================================
-   MOTOR DE RECOMENDACIONES DE DIVERSIFICACIÓN
+   RECOMENDACIONES DE DIVERSIFICACIÓN
    ============================================================ */
 function analyzeDiversification(pf) {
   const recos = [];
-  const positions = pf.positions.filter(p => p.value != null && p.value > 0);
-  const totalValue = positions.reduce((s, p) => s + p.value, 0);
+  const positions = pf.positions
+    .map(p => ({ ...p, valueDisp: toDisp(p.value, p.currency) }))
+    .filter(p => p.valueDisp != null && p.valueDisp > 0);
+  const totalValue = positions.reduce((s, p) => s + p.valueDisp, 0);
 
   if (!positions.length || totalValue <= 0) {
-    return { score: 0, recos: [{ level: "info", icon: "ℹ️", text: "Agrega transacciones y actualiza precios para analizar tu diversificación." }], metrics: null };
+    return { score: 0, recos: [{ level: "info", icon: "ℹ️", text: "Agrega operaciones y actualiza precios para analizar tu diversificación." }], metrics: null };
   }
 
   let score = 100;
-  const weights = positions.map(p => ({ ...p, w: p.value / totalValue }));
+  const weights = positions.map(p => ({ ...p, w: p.valueDisp / totalValue }));
   weights.sort((a, b) => b.w - a.w);
 
-  // Índice Herfindahl-Hirschman (0–1): concentración del portafolio
   const hhi = weights.reduce((s, p) => s + p.w * p.w, 0);
-  const effectiveN = 1 / hhi; // número efectivo de posiciones
+  const effectiveN = 1 / hhi;
 
-  // Sectores
   const sectorMap = {};
   for (const p of weights) sectorMap[p.sector] = (sectorMap[p.sector] || 0) + p.w;
   const sectors = Object.entries(sectorMap).sort((a, b) => b[1] - a[1]);
   const topSector = sectors[0];
 
-  // --- Regla 1: número de posiciones ---
   const n = positions.length;
   if (n === 1) {
     score -= 35;
-    recos.push({ level: "bad", icon: "🚨", text: `Todo tu portafolio está en <b>un solo activo</b>. Es el mayor riesgo de concentración posible: considera repartir entre al menos 5–10 activos o usar un ETF diversificado (ej. VOO, VT).` });
+    recos.push({ level: "bad", icon: "🚨", text: `Todo tu portafolio está en <b>un solo activo</b>. Es el mayor riesgo de concentración posible: reparte entre al menos 5–10 activos o usa un ETF diversificado (ej. VOO, VT).` });
   } else if (n < 5) {
     score -= 18;
-    recos.push({ level: "warn", icon: "⚠️", text: `Solo tienes <b>${n} posiciones</b>. Los portafolios con 5–15 activos distintos reducen mucho el riesgo específico de cada empresa. Considera añadir más activos o un ETF de mercado amplio.` });
+    recos.push({ level: "warn", icon: "⚠️", text: `Solo tienes <b>${n} posiciones</b>. Con 5–15 activos distintos reduces mucho el riesgo específico de cada empresa.` });
   } else if (n > 25) {
-    recos.push({ level: "info", icon: "💡", text: `Tienes ${n} posiciones. Más de ~25 activos individuales ya no añade mucha diversificación y complica el seguimiento; un ETF puede simplificar.` });
+    recos.push({ level: "info", icon: "💡", text: `Tienes ${n} posiciones. Más de ~25 activos individuales ya no añade mucha diversificación; un ETF puede simplificar.` });
   } else {
     recos.push({ level: "good", icon: "✅", text: `Buen número de posiciones (<b>${n}</b>): suficiente para repartir el riesgo sin volverse inmanejable.` });
   }
 
-  // --- Regla 2: concentración en un activo ---
   const top = weights[0];
   if (top.w > 0.5 && n > 1) {
     score -= 25;
-    recos.push({ level: "bad", icon: "🚨", text: `<b>${esc(top.ticker)}</b> representa el <b>${(top.w * 100).toFixed(1)}%</b> de tu portafolio. Más de la mitad de tu dinero depende de un solo activo; considera reducir esa posición o reforzar las demás.` });
+    recos.push({ level: "bad", icon: "🚨", text: `<b>${esc(top.ticker)}</b> representa el <b>${(top.w * 100).toFixed(1)}%</b> de tus inversiones. Más de la mitad depende de un solo activo.` });
   } else if (top.w > 0.3 && n > 1) {
     score -= 12;
-    recos.push({ level: "warn", icon: "⚠️", text: `<b>${esc(top.ticker)}</b> pesa <b>${(top.w * 100).toFixed(1)}%</b>. Una regla común es que ninguna posición individual supere el 20–25% del total.` });
+    recos.push({ level: "warn", icon: "⚠️", text: `<b>${esc(top.ticker)}</b> pesa <b>${(top.w * 100).toFixed(1)}%</b>. Una regla común es que ninguna posición supere el 20–25% del total.` });
   } else if (n > 1) {
     recos.push({ level: "good", icon: "✅", text: `Ninguna posición domina el portafolio (la mayor, ${esc(top.ticker)}, pesa ${(top.w * 100).toFixed(1)}%).` });
   }
 
-  // --- Regla 3: concentración sectorial ---
   if (sectors.length === 1 && n > 1) {
     score -= 20;
-    recos.push({ level: "bad", icon: "🏭", text: `Todas tus posiciones están en el sector <b>${esc(topSector[0])}</b>. Si ese sector cae, todo tu portafolio cae junto. Busca sectores poco correlacionados (salud, consumo, energía, renta fija…).` });
+    recos.push({ level: "bad", icon: "🏭", text: `Todas tus posiciones están en el sector <b>${esc(topSector[0])}</b>. Si ese sector cae, todo cae junto.` });
   } else if (topSector[1] > 0.5 && sectors.length > 1) {
     score -= 12;
-    recos.push({ level: "warn", icon: "🏭", text: `El sector <b>${esc(topSector[0])}</b> concentra el <b>${(topSector[1] * 100).toFixed(1)}%</b> del portafolio. Intenta que ningún sector supere ~40%.` });
+    recos.push({ level: "warn", icon: "🏭", text: `El sector <b>${esc(topSector[0])}</b> concentra el <b>${(topSector[1] * 100).toFixed(1)}%</b>. Intenta que ningún sector supere ~40%.` });
   } else if (sectors.length >= 3) {
-    recos.push({ level: "good", icon: "✅", text: `Buena variedad sectorial: ${sectors.length} sectores distintos y el mayor (${esc(topSector[0])}) pesa ${(topSector[1] * 100).toFixed(1)}%.` });
+    recos.push({ level: "good", icon: "✅", text: `Buena variedad sectorial: ${sectors.length} sectores y el mayor (${esc(topSector[0])}) pesa ${(topSector[1] * 100).toFixed(1)}%.` });
   }
 
-  // --- Regla 4: clases de activos ---
   const hasETF = weights.some(p => p.sector === "ETF / Índice");
   const hasBonds = weights.some(p => p.sector === "Renta fija / Bonos");
   const cryptoW = sectorMap["Criptomonedas"] || 0;
+  const collectW = sectorMap["Coleccionables"] || 0;
   if (!hasBonds && n >= 3) {
-    recos.push({ level: "info", icon: "💡", text: `No tienes <b>renta fija</b> (bonos, CETES, treasuries). Una porción en renta fija amortigua las caídas de la bolsa — típicamente 10–40% según tu tolerancia al riesgo y horizonte.` });
+    recos.push({ level: "info", icon: "💡", text: `No tienes <b>renta fija</b> (bonos, CETES). Una porción amortigua las caídas de la bolsa — típicamente 10–40% según tu horizonte. Nota: tu Smart Cash ya funciona parecido a renta fija de corto plazo.` });
   }
   if (!hasETF && n >= 2 && n < 8) {
     recos.push({ level: "info", icon: "💡", text: `Considera un <b>ETF de mercado amplio</b> (ej. S&P 500 o mundial) como núcleo del portafolio: diversificación instantánea a bajo costo.` });
   }
   if (cryptoW > 0.15) {
     score -= 10;
-    recos.push({ level: "warn", icon: "🪙", text: `Las <b>criptomonedas</b> pesan ${(cryptoW * 100).toFixed(1)}% de tu portafolio. Por su alta volatilidad, muchas guías sugieren limitarlas a 5–10%.` });
+    recos.push({ level: "warn", icon: "🪙", text: `Las <b>criptomonedas</b> pesan ${(cryptoW * 100).toFixed(1)}%. Por su volatilidad, muchas guías sugieren limitarlas a 5–10%.` });
+  }
+  if (collectW > 0.2) {
+    score -= 8;
+    recos.push({ level: "warn", icon: "🃏", text: `Los <b>coleccionables</b> (tarjetas, etc.) pesan ${(collectW * 100).toFixed(1)}%. Son poco líquidos y difíciles de valuar; considera limitarlos a ~10–15% del patrimonio.` });
   }
 
-  // --- Regla 5: HHI ---
+  // Divisas
+  const usdW = weights.filter(p => p.currency === "USD").reduce((s, p) => s + p.w, 0);
+  if (n >= 3) {
+    if (usdW > 0.9) recos.push({ level: "info", icon: "💱", text: `Casi todo (${(usdW * 100).toFixed(0)}%) está en <b>dólares</b>. Está bien como cobertura vs el peso, pero recuerda que tus gastos son en MXN.` });
+    else if (usdW < 0.1) recos.push({ level: "info", icon: "💱", text: `Casi todo está en <b>pesos</b>. Invertir una parte en dólares (Trading USA) te protege de la depreciación del MXN.` });
+    else recos.push({ level: "good", icon: "✅", text: `Buena mezcla de divisas: ${(usdW * 100).toFixed(0)}% en USD y ${((1 - usdW) * 100).toFixed(0)}% en MXN.` });
+  }
+
+  // Efectivo
+  const cashW = pf.patrimonio > 0 ? pf.efectivo / pf.patrimonio : 0;
+  if (cashW > 0.4 && pf.efectivo > 0) {
+    recos.push({ level: "info", icon: "💰", text: `Tienes <b>${(cashW * 100).toFixed(0)}% en efectivo</b>. En Smart Cash genera rendimiento, pero a largo plazo la bolsa suele rendir más; evalúa si es tu colchón o dinero por invertir.` });
+  }
+
   if (hhi > 0.35 && n > 1) score -= 8;
   else if (hhi < 0.18 && n >= 5) score += 3;
 
@@ -767,7 +1008,8 @@ function analyzeDiversification(pf) {
   const metrics = {
     n, hhi, effectiveN,
     topWeight: top.w, topTicker: top.ticker,
-    nSectors: sectors.length, topSector: topSector[0], topSectorW: topSector[1]
+    nSectors: sectors.length, topSector: topSector[0], topSectorW: topSector[1],
+    usdW, cashW
   };
   return { score, recos, metrics };
 }
@@ -779,75 +1021,136 @@ function renderAll() {
   const pf = computePortfolio();
   renderSummary(pf);
   renderCharts(pf);
+  renderAccounts(pf);
   renderPositions(pf);
   renderTransactions();
+  renderCashflows();
   renderDiversification(pf);
-  const anyPrice = Object.values(state.prices).map(p => p.updatedAt).sort().pop();
+  renderSelectors();
+  const anyPrice = Object.values(state.prices).map(p => p.updatedAt).filter(Boolean).sort().pop();
   document.getElementById("lastUpdate").textContent =
-    anyPrice ? "Últ. actualización: " + new Date(anyPrice).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "";
+    anyPrice ? "Últ. act: " + new Date(anyPrice).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "";
+  document.getElementById("fxRate").value = fxRate().toFixed(4);
+  document.getElementById("fxInfo").textContent = state.fx.manual
+    ? "(manual — pulsa ⟳ para traer el del mercado)"
+    : "actualizado " + (state.fx.updatedAt ? new Date(state.fx.updatedAt).toLocaleString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "");
 }
 
 function renderSummary(pf) {
   const c = document.getElementById("summaryCards");
-  if (!state.transactions.length) {
+  if (!state.transactions.length && !state.cashflows.length) {
     c.innerHTML = `<div class="card" style="grid-column:1/-1"><div class="empty-state">
       <div class="big">👋</div><b>¡Bienvenido a AlfonInvest!</b><br><br>
-      Registra tu primera compra en la pestaña <b>🧾 Transacciones</b> y aquí verás tu portafolio en tiempo real.<br><br>
+      1) En <b>🏦 Cuentas</b> registra tus depósitos a GBM Smart Cash y tus transferencias a Trading MX / Trading USA.<br>
+      2) En <b>🧾 Operaciones</b> registra tus compras y ventas.<br><br>
       <button class="primary" onclick="loadDemo()">✨ O prueba con datos de ejemplo</button>
     </div></div>`;
     return;
   }
-  const dayPct = pf.totalValue - pf.totalDayChange > 0 ? (pf.totalDayChange / (pf.totalValue - pf.totalDayChange)) * 100 : null;
+  const dayBase = pf.invertido - pf.totalDayChange;
+  const dayPct = dayBase > 0 ? (pf.totalDayChange / dayBase) * 100 : null;
   c.innerHTML = `
     <div class="card">
-      <div class="label">Valor del portafolio</div>
-      <div class="value">${pf.hasAllPrices ? fmtMoney(pf.totalValue) : fmtMoney(pf.totalValue) + " *"}</div>
+      <div class="label">Patrimonio total</div>
+      <div class="value">${fmtMoney(pf.patrimonio)}${pf.hasAllPrices ? "" : " *"}</div>
       <div class="sub ${signClass(pf.totalDayChange)}">${pf.totalDayChange ? fmtMoney(pf.totalDayChange) + (dayPct != null ? " (" + fmtPct(dayPct) + ") hoy" : "") : "—"}</div>
     </div>
     <div class="card">
-      <div class="label">Costo invertido</div>
-      <div class="value">${fmtMoney(pf.totalCost)}</div>
-      <div class="sub neutral">${pf.positions.length} posiciones abiertas</div>
+      <div class="label">${pf.hasCashflows ? "Dinero aportado (neto)" : "Costo de posiciones"}</div>
+      <div class="value">${fmtMoney(pf.hasCashflows ? pf.aportadoNeto : pf.totalPosCost)}</div>
+      <div class="sub neutral">${pf.hasCashflows ? "desde tu banco" : "registra depósitos en Cuentas para más precisión"}</div>
     </div>
     <div class="card">
-      <div class="label">Ganancia no realizada</div>
+      <div class="label">Ganancia total</div>
+      <div class="value ${signClass(pf.ganancia)}">${fmtMoney(pf.ganancia)}</div>
+      <div class="sub ${signClass(pf.ganancia)}">${fmtPct(pf.gananciaPct)}${pf.hasCashflows ? " · incluye FX y rendimientos" : ""}</div>
+    </div>
+    <div class="card">
+      <div class="label">Invertido / Efectivo</div>
+      <div class="value">${fmtMoney(pf.invertido)}</div>
+      <div class="sub neutral">+ ${fmtMoney(pf.efectivo)} en efectivo</div>
+    </div>
+    <div class="card">
+      <div class="label">G. no realizada</div>
       <div class="value ${signClass(pf.totalUnreal)}">${fmtMoney(pf.totalUnreal)}</div>
-      <div class="sub ${signClass(pf.totalUnreal)}">${fmtPct(pf.totalUnrealPct)}</div>
+      <div class="sub neutral">posiciones abiertas</div>
     </div>
     <div class="card">
-      <div class="label">Ganancia realizada</div>
-      <div class="value ${signClass(pf.totalRealized)}">${fmtMoney(pf.totalRealized)}</div>
-      <div class="sub neutral">por ventas ejecutadas</div>
-    </div>
-    <div class="card">
-      <div class="label">Rendimiento total</div>
-      <div class="value ${signClass(pf.totalReturn)}">${fmtPct(pf.totalReturnPct)}</div>
-      <div class="sub ${signClass(pf.totalReturn)}">${fmtMoney(pf.totalReturn)}</div>
+      <div class="label">G. realizada + rendimientos</div>
+      <div class="value ${signClass(pf.totalRealized + pf.totalYields)}">${fmtMoney(pf.totalRealized + pf.totalYields)}</div>
+      <div class="sub neutral">ventas ${fmtMoney(pf.totalRealized)} · interés ${fmtMoney(pf.totalYields)}</div>
     </div>`;
   if (!pf.hasAllPrices) {
     c.innerHTML += `<div class="card" style="grid-column:1/-1;border-color:var(--yellow)">
-      <div class="sub" style="color:var(--yellow)">* Faltan precios de algunos activos. Pulsa <b>⟳ Actualizar precios</b> o escríbelos manualmente en Posiciones.</div></div>`;
+      <div class="sub" style="color:var(--yellow)">* Faltan precios de algunos activos. Pulsa <b>⟳ Actualizar</b> o escríbelos manualmente en Posiciones.</div></div>`;
   }
 }
 
 function renderCharts(pf) {
-  const withValue = pf.positions.filter(p => p.value != null && p.value > 0);
-  // Por activo
-  const byAsset = withValue.map((p, i) => ({ label: p.ticker, value: p.value, color: PALETTE[i % PALETTE.length] }));
+  // Por cuenta
+  const byAccount = Object.values(pf.accounts)
+    .map(A => ({ label: A.name, value: toDisp(A.value, A.currency) }))
+    .filter(x => x.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .map((x, i) => ({ ...x, color: PALETTE[i % PALETTE.length] }));
+  document.getElementById("chartByAccount").innerHTML = donutChart(byAccount);
+
+  // Por activo (convertido a moneda de visualización, agrupado por ticker)
+  const assetMap = {};
+  for (const p of pf.positions) {
+    const v = toDisp(p.value, p.currency);
+    if (v > 0) assetMap[p.ticker] = (assetMap[p.ticker] || 0) + v;
+  }
+  const byAsset = Object.entries(assetMap).sort((a, b) => b[1] - a[1])
+    .map(([label, value], i) => ({ label, value, color: PALETTE[i % PALETTE.length] }));
   document.getElementById("chartByAsset").innerHTML = donutChart(byAsset);
+
   // Por sector
   const secMap = {};
-  for (const p of withValue) secMap[p.sector] = (secMap[p.sector] || 0) + p.value;
+  for (const p of pf.positions) {
+    const v = toDisp(p.value, p.currency);
+    if (v > 0) secMap[p.sector] = (secMap[p.sector] || 0) + v;
+  }
   const bySector = Object.entries(secMap).sort((a, b) => b[1] - a[1])
     .map(([label, value], i) => ({ label, value, color: PALETTE[i % PALETTE.length] }));
   document.getElementById("chartBySector").innerHTML = donutChart(bySector);
-  // P/L
+
+  // P/L por posición (en moneda de su cuenta)
   const pnl = pf.positions.filter(p => p.unreal != null)
-    .map(p => ({ label: p.ticker, value: p.unreal }))
-    .sort((a, b) => b.value - a.value);
+    .map(p => ({ label: p.ticker, value: p.unreal, cur: p.currency }))
+    .sort((a, b) => toDisp(b.value, b.cur) - toDisp(a.value, a.cur));
   document.getElementById("chartPnL").innerHTML = barChartPnL(pnl);
-  // Historia
+
   document.getElementById("chartHistory").innerHTML = lineChart(state.history);
+}
+
+function renderAccounts(pf) {
+  const grid = document.getElementById("accCards");
+  const typeLabel = { cash: "Efectivo con rendimiento", broker: "Inversiones" };
+  grid.innerHTML = state.accounts.map(a => {
+    const A = pf.accounts[a.id];
+    const gains = A.unreal + A.realized + A.yields - A.fees;
+    const custom = !DEFAULT_ACCOUNTS.some(d => d.id === a.id);
+    return `<div class="acc-card">
+      <div class="acc-head">
+        <div>
+          <div class="acc-name">${esc(a.name)}</div>
+          <div class="acc-type">${typeLabel[a.type] || a.type}</div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span class="cur-badge">${a.currency}</span>
+          ${custom ? `<button class="danger-ghost" title="Eliminar cuenta" onclick="deleteAccount('${a.id}')">🗑</button>` : ""}
+        </div>
+      </div>
+      <div class="acc-row"><span>Efectivo</span><span class="${A.cash < -0.01 ? "neg" : ""}">${fmtMoney(A.cash, a.currency)}</span></div>
+      ${a.type === "broker" ? `<div class="acc-row"><span>Inversiones</span><span>${fmtMoney(A.posValue, a.currency)}</span></div>` : ""}
+      <div class="acc-row"><span>Rendimientos</span><span class="${signClass(A.yields)}">${fmtMoney(A.yields, a.currency)}</span></div>
+      ${a.type === "broker" ? `<div class="acc-row"><span>G/P (real.+no real.)</span><span class="${signClass(A.unreal + A.realized)}">${fmtMoney(A.unreal + A.realized, a.currency)}</span></div>` : ""}
+      <div class="acc-row acc-total"><span>Valor total</span><span>${fmtMoney(A.value, a.currency)}</span></div>
+      ${A.cash < -0.01 ? `<div class="muted-note" style="color:var(--yellow)">⚠️ Efectivo negativo: registra los depósitos/transferencias que fondearon tus compras.</div>` : ""}
+      ${gains !== 0 && a.type === "cash" ? "" : ""}
+    </div>`;
+  }).join("");
 }
 
 function renderPositions(pf) {
@@ -855,47 +1158,46 @@ function renderPositions(pf) {
   if (!pf.positions.length) {
     el.innerHTML = `<div class="empty-state"><div class="big">💼</div>No tienes posiciones abiertas.</div>`;
   } else {
-    const totalValue = pf.positions.reduce((s, p) => s + (p.value || 0), 0);
+    const totalDisp = pf.positions.reduce((s, p) => s + (toDisp(p.value, p.currency) || 0), 0);
     let rows = "";
     for (const p of pf.positions) {
-      const weight = p.value != null && totalValue > 0 ? (p.value / totalValue) * 100 : null;
+      const vDisp = toDisp(p.value, p.currency);
+      const weight = vDisp != null && totalDisp > 0 ? (vDisp / totalDisp) * 100 : null;
       const warn = p.warnings.length ? ` <span title="${esc(p.warnings.join(" "))}" style="cursor:help">⚠️</span>` : "";
       rows += `<tr>
         <td class="left"><span class="ticker-badge">${esc(p.ticker)}</span>${warn}<br><small style="color:var(--text-dim)">${esc(p.name)}</small></td>
+        <td class="left"><small>${esc(acc(p.account)?.name || p.account)}</small><br><span class="cur-badge">${p.currency}</span></td>
         <td class="left"><span class="sector-tag">${esc(p.sector)}</span></td>
         <td>${fmtNum(p.shares)}</td>
-        <td>${fmtMoney(p.avg)}</td>
+        <td>${fmtMoney(p.avg, p.currency)}</td>
         <td><input class="price-input" type="number" step="any" min="0" value="${p.cur != null ? +p.cur.toFixed(4) : ""}" placeholder="—"
-             onchange="setManualPrice('${esc(p.ticker)}', this.value)" title="Editar precio manualmente"></td>
-        <td>${fmtMoney(p.value)}</td>
-        <td class="${signClass(p.dayChange ?? 0)}">${p.dayChange != null ? fmtMoney(p.dayChange) : "—"}</td>
-        <td class="${signClass(p.unreal ?? 0)}">${fmtMoney(p.unreal)}<br><small>${fmtPct(p.unrealPct)}</small></td>
+             onchange="setManualPrice('${esc(p.ticker)}', this.value)" title="Editar precio manualmente (${p.currency})"></td>
+        <td>${fmtMoney(p.value, p.currency)}</td>
+        <td class="${signClass(p.dayChange ?? 0)}">${p.dayChange != null ? fmtMoney(p.dayChange, p.currency) : "—"}</td>
+        <td class="${signClass(p.unreal ?? 0)}">${fmtMoney(p.unreal, p.currency)}<br><small>${fmtPct(p.unrealPct)}</small></td>
         <td>${weight != null ? weight.toFixed(1) + "%" : "—"}</td>
       </tr>`;
     }
     el.innerHTML = `<table>
-      <thead><tr><th class="left">Activo</th><th class="left">Sector</th><th>Acciones</th><th>Costo prom.</th>
-      <th>Precio actual</th><th>Valor</th><th>Cambio hoy</th><th>G/P no realizada</th><th>Peso</th></tr></thead>
+      <thead><tr><th class="left">Activo</th><th class="left">Cuenta</th><th class="left">Sector</th><th>Cant.</th><th>Costo prom.</th>
+      <th>Precio actual</th><th>Valor</th><th>Hoy</th><th>G/P no realizada</th><th>Peso</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
   }
 
-  // Realizadas
   const rel = document.getElementById("realizedTable");
   const withRealized = [...pf.positions.filter(p => Math.abs(p.realized) > 1e-9), ...pf.closed];
   if (!withRealized.length) {
     rel.innerHTML = `<div class="empty-state">Aún no has vendido nada — aquí aparecerán tus ganancias/pérdidas realizadas.</div>`;
   } else {
     let rows = "";
-    let tot = 0;
     for (const p of withRealized) {
-      tot += p.realized;
       rows += `<tr>
         <td class="left"><span class="ticker-badge">${esc(p.ticker)}</span> <small style="color:var(--text-dim)">${esc(p.name)}</small>${p.shares === 0 ? ' <span class="sector-tag">cerrada</span>' : ""}</td>
-        <td class="${signClass(p.realized)}">${fmtMoney(p.realized)}</td>
+        <td class="left"><small>${esc(acc(p.account)?.name || p.account)}</small></td>
+        <td class="${signClass(p.realized)}">${fmtMoney(p.realized, p.currency)}</td>
       </tr>`;
     }
-    rows += `<tr style="border-top:2px solid var(--border)"><td class="left"><b>Total</b></td><td class="${signClass(tot)}"><b>${fmtMoney(tot)}</b></td></tr>`;
-    rel.innerHTML = `<table><thead><tr><th class="left">Activo</th><th>G/P realizada</th></tr></thead><tbody>${rows}</tbody></table>`;
+    rel.innerHTML = `<table><thead><tr><th class="left">Activo</th><th class="left">Cuenta</th><th>G/P realizada</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
 }
 
@@ -908,22 +1210,54 @@ function renderTransactions() {
   const txs = [...state.transactions].sort((a, b) => a.date === b.date ? (a.id > b.id ? -1 : 1) : (a.date > b.date ? -1 : 1));
   let rows = "";
   for (const tx of txs) {
+    const a = acc(tx.account);
+    const cur = a?.currency || "USD";
     const total = tx.qty * tx.price + (tx.type === "buy" ? tx.fees : -tx.fees);
     rows += `<tr>
       <td class="left">${esc(tx.date)}</td>
       <td class="left"><span class="${tx.type === "buy" ? "type-buy" : "type-sell"}">${tx.type === "buy" ? "▲ Compra" : "▼ Venta"}</span></td>
       <td class="left"><span class="ticker-badge">${esc(tx.ticker)}</span> <small style="color:var(--text-dim)">${esc(tx.name || "")}</small></td>
-      <td class="left"><span class="sector-tag">${esc(tx.sector)}</span></td>
+      <td class="left"><small>${esc(a?.name || tx.account || "—")}</small></td>
       <td>${fmtNum(tx.qty)}</td>
-      <td>${fmtMoney(tx.price)}</td>
-      <td>${fmtMoney(tx.fees)}</td>
-      <td>${fmtMoney(total)}</td>
+      <td>${fmtMoney(tx.price, cur)}</td>
+      <td>${fmtMoney(tx.fees, cur)}</td>
+      <td>${fmtMoney(total, cur)}</td>
       <td><button class="danger-ghost" onclick="deleteTx('${esc(tx.id)}')" title="Eliminar">🗑</button></td>
     </tr>`;
   }
   el.innerHTML = `<table><thead><tr><th class="left">Fecha</th><th class="left">Tipo</th><th class="left">Activo</th>
-    <th class="left">Sector</th><th>Cantidad</th><th>Precio</th><th>Comisión</th><th>Total</th><th></th></tr></thead>
+    <th class="left">Cuenta</th><th>Cant.</th><th>Precio</th><th>Comisión</th><th>Total</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table>`;
+}
+
+function renderCashflows() {
+  const el = document.getElementById("cfTable");
+  if (!state.cashflows.length) {
+    el.innerHTML = `<div class="empty-state"><div class="big">🏦</div>Registra tus depósitos, transferencias y rendimientos con el formulario de arriba.</div>`;
+    return;
+  }
+  const kinds = { deposit: "⬇ Depósito", withdraw: "⬆ Retiro", transfer: "⇄ Transferencia", yield: "💰 Rendimiento", fee: "💸 Comisión" };
+  const flows = [...state.cashflows].sort((a, b) => a.date === b.date ? (a.id > b.id ? -1 : 1) : (a.date > b.date ? -1 : 1));
+  let rows = "";
+  for (const cf of flows) {
+    const A = acc(cf.from), B = cf.to ? acc(cf.to) : null;
+    let detail = esc(A?.name || cf.from);
+    let monto = fmtMoney(cf.amount, A?.currency);
+    if (cf.kind === "transfer" && B) {
+      detail += " → " + esc(B.name);
+      if (A?.currency !== B?.currency && cf.amountTo) monto += " → " + fmtMoney(cf.amountTo, B.currency);
+    }
+    rows += `<tr>
+      <td class="left">${esc(cf.date)}</td>
+      <td class="left">${kinds[cf.kind] || cf.kind}</td>
+      <td class="left">${detail}</td>
+      <td>${monto}</td>
+      <td class="left"><small style="color:var(--text-dim)">${esc(cf.note || "")}</small></td>
+      <td><button class="danger-ghost" onclick="deleteCashflow('${esc(cf.id)}')" title="Eliminar">🗑</button></td>
+    </tr>`;
+  }
+  el.innerHTML = `<table><thead><tr><th class="left">Fecha</th><th class="left">Tipo</th><th class="left">Cuenta(s)</th>
+    <th>Monto</th><th class="left">Nota</th><th></th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderDiversification(pf) {
@@ -937,12 +1271,28 @@ function renderDiversification(pf) {
       <div class="metric-row"><span>Índice de concentración (HHI)</span><span>${metrics.hhi.toFixed(3)}</span></div>
       <div class="metric-row"><span>Mayor posición</span><span>${esc(metrics.topTicker)} · ${(metrics.topWeight * 100).toFixed(1)}%</span></div>
       <div class="metric-row"><span>Sectores distintos</span><span>${metrics.nSectors}</span></div>
-      <div class="metric-row"><span>Mayor sector</span><span>${esc(metrics.topSector)} · ${(metrics.topSectorW * 100).toFixed(1)}%</span></div>`;
+      <div class="metric-row"><span>Mayor sector</span><span>${esc(metrics.topSector)} · ${(metrics.topSectorW * 100).toFixed(1)}%</span></div>
+      <div class="metric-row"><span>Exposición a USD</span><span>${(metrics.usdW * 100).toFixed(0)}%</span></div>
+      <div class="metric-row"><span>Efectivo del patrimonio</span><span>${(metrics.cashW * 100).toFixed(0)}%</span></div>`;
   } else {
     m.innerHTML = `<div class="empty-state">Sin datos suficientes.</div>`;
   }
   document.getElementById("recoList").innerHTML = recos.map(r =>
     `<div class="reco ${r.level}"><span class="icon">${r.icon}</span><div>${r.text}</div></div>`).join("");
+}
+
+function renderSelectors() {
+  const brokerOpts = state.accounts.filter(a => a.type === "broker")
+    .map(a => `<option value="${a.id}">${esc(a.name)} (${a.currency})</option>`).join("");
+  const allOpts = state.accounts
+    .map(a => `<option value="${a.id}">${esc(a.name)} (${a.currency})</option>`).join("");
+
+  for (const [id, opts] of [["fAccount", brokerOpts], ["importAccount", brokerOpts], ["cfFrom", allOpts], ["cfTo", allOpts]]) {
+    const sel = document.getElementById(id);
+    const prev = sel.value;
+    sel.innerHTML = opts;
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+  }
 }
 
 /* ============================================================
@@ -970,18 +1320,46 @@ function deleteTx(id) {
   toast("Operación eliminada");
 }
 
+function deleteCashflow(id) {
+  const cf = state.cashflows.find(c => c.id === id);
+  if (!cf) return;
+  if (!confirm(`¿Eliminar este movimiento del ${cf.date}?`)) return;
+  state.cashflows = state.cashflows.filter(c => c.id !== id);
+  saveState();
+  renderAll();
+  toast("Movimiento eliminado");
+}
+
+function deleteAccount(id) {
+  const a = acc(id);
+  if (!a) return;
+  const used = state.transactions.some(t => t.account === id) || state.cashflows.some(c => c.from === id || c.to === id);
+  if (used) { toast("No se puede eliminar: la cuenta tiene operaciones o movimientos. Bórralos primero.", 5000); return; }
+  if (!confirm(`¿Eliminar la cuenta "${a.name}"?`)) return;
+  state.accounts = state.accounts.filter(x => x.id !== id);
+  saveState();
+  renderAll();
+  toast("Cuenta eliminada");
+}
+
 function loadDemo() {
-  if (state.transactions.length && !confirm("Esto añadirá datos de ejemplo a tu portafolio. ¿Continuar?")) return;
-  const demo = [
-    { type: "buy", ticker: "AAPL", name: "Apple Inc.", sector: "Tecnología", qty: 10, price: 178.50, fees: 1, date: "2025-09-15" },
-    { type: "buy", ticker: "MSFT", name: "Microsoft", sector: "Tecnología", qty: 5, price: 415.20, fees: 1, date: "2025-10-02" },
-    { type: "buy", ticker: "VOO", name: "Vanguard S&P 500 ETF", sector: "ETF / Índice", qty: 8, price: 520.00, fees: 0, date: "2025-11-10" },
-    { type: "buy", ticker: "KO", name: "Coca-Cola", sector: "Consumo", qty: 20, price: 62.30, fees: 1, date: "2026-01-20" },
-    { type: "buy", ticker: "AAPL", name: "Apple Inc.", sector: "Tecnología", qty: 5, price: 195.00, fees: 1, date: "2026-02-14" },
-    { type: "sell", ticker: "AAPL", name: "Apple Inc.", sector: "Tecnología", qty: 4, price: 210.00, fees: 1, date: "2026-05-06" },
-    { type: "buy", ticker: "JNJ", name: "Johnson & Johnson", sector: "Salud", qty: 6, price: 155.80, fees: 1, date: "2026-06-01" }
+  if ((state.transactions.length || state.cashflows.length) && !confirm("Esto añadirá datos de ejemplo. ¿Continuar?")) return;
+  const cf = [
+    { kind: "deposit", from: "smart_mxn", amount: 150000, date: "2026-01-10", note: "Aportación inicial" },
+    { kind: "yield", from: "smart_mxn", amount: 1150, date: "2026-02-01", note: "Rendimiento Smart Cash enero" },
+    { kind: "transfer", from: "smart_mxn", to: "trading_mx", amount: 40000, date: "2026-02-05" },
+    { kind: "transfer", from: "smart_mxn", to: "trading_usa", amount: 74000, amountTo: 4000, date: "2026-02-05", note: "Conversión a USD" },
+    { kind: "yield", from: "smart_mxn", amount: 890, date: "2026-03-01", note: "Rendimiento Smart Cash febrero" }
   ];
-  for (const d of demo) state.transactions.push({ id: uid(), ...d });
+  const tx = [
+    { account: "trading_usa", type: "buy", ticker: "VOO", name: "Vanguard S&P 500", sector: "ETF / Índice", qty: 3, price: 520.00, fees: 0, date: "2026-02-06" },
+    { account: "trading_usa", type: "buy", ticker: "AAPL", name: "Apple", sector: "Tecnología", qty: 8, price: 195.00, fees: 1, date: "2026-02-10" },
+    { account: "trading_usa", type: "sell", ticker: "AAPL", name: "Apple", sector: "Tecnología", qty: 3, price: 212.00, fees: 1, date: "2026-05-15" },
+    { account: "trading_mx", type: "buy", ticker: "NAFTRACISHRS.MX", name: "Naftrac (IPC)", sector: "ETF / Índice", qty: 250, price: 118.50, fees: 25, date: "2026-02-06" },
+    { account: "trading_mx", type: "buy", ticker: "WALMEX.MX", name: "Walmart de México", sector: "Consumo", qty: 120, price: 62.80, fees: 20, date: "2026-03-12" }
+  ];
+  for (const c of cf) state.cashflows.push({ id: uid(), amountTo: null, note: "", to: null, ...c });
+  for (const t of tx) state.transactions.push({ id: uid(), ...t });
   saveState();
   renderAll();
   toast("✨ Datos de ejemplo cargados. Pulsa ⟳ para traer precios reales.");
@@ -1028,9 +1406,9 @@ function splitCsvLine(line, delim) {
 function cleanNumber(s) {
   if (s == null) return NaN;
   let t = String(s).replace(/[$\s]/g, "").replace(/mxn|usd/gi, "");
-  if (t.includes(",") && t.includes(".")) t = t.replace(/,/g, "");            // 1,234.56
-  else if (/,\d{1,2}$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");   // 1.234,56
-  else t = t.replace(/,/g, "");                                               // 1,234
+  if (t.includes(",") && t.includes(".")) t = t.replace(/,/g, "");
+  else if (/,\d{1,2}$/.test(t)) t = t.replace(/\./g, "").replace(",", ".");
+  else t = t.replace(/,/g, "");
   const n = parseFloat(t);
   return isNaN(n) ? NaN : n;
 }
@@ -1039,14 +1417,14 @@ function cleanDate(s) {
   const t = String(s || "").trim().slice(0, 10);
   let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);   // dd/mm/yyyy (formato GBM/México)
+  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
   if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})$/);
   if (m) return `20${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
   return null;
 }
 
-function parseImportText(text, addMx) {
+function parseImportText(text, addMx, accountId) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l);
   if (lines.length < 2) return { error: "Necesito al menos una línea de encabezados y una de datos." };
 
@@ -1061,7 +1439,7 @@ function parseImportText(text, addMx) {
   const missing = ["date", "type", "ticker", "qty", "price"].filter(f => colIdx[f] === -1);
   if (missing.length) {
     const nombres = { date: "fecha", type: "tipo/operación", ticker: "emisora/ticker", qty: "títulos/cantidad", price: "precio" };
-    return { error: "No encontré estas columnas en los encabezados: " + missing.map(f => nombres[f]).join(", ") + ". Revisa que la primera línea tenga los nombres de las columnas." };
+    return { error: "No encontré estas columnas: " + missing.map(f => nombres[f]).join(", ") + ". Revisa que la primera línea tenga los encabezados." };
   }
 
   const txs = [], skipped = [];
@@ -1088,7 +1466,7 @@ function parseImportText(text, addMx) {
 
     const fees = colIdx.fees >= 0 ? (cleanNumber(get("fees")) || 0) : 0;
     txs.push({
-      id: uid(), type, ticker, date, qty, price, fees: Math.abs(fees),
+      id: uid(), account: accountId, type, ticker, date, qty, price, fees: Math.abs(fees),
       name: String(get("name") || "").trim(),
       sector: String(get("sector") || "").trim() || "Otro"
     });
@@ -1099,19 +1477,21 @@ function parseImportText(text, addMx) {
 function runImport() {
   const text = document.getElementById("importText").value.trim();
   if (!text) { toast("Pega tus movimientos o elige un archivo CSV primero."); return; }
+  const accountId = document.getElementById("importAccount").value;
+  if (!accountId) { toast("Elige la cuenta a la que van estas operaciones."); return; }
   const addMx = document.getElementById("chkMx").checked;
-  const res = parseImportText(text, addMx);
+  const res = parseImportText(text, addMx, accountId);
   if (res.error) { toast("❌ " + res.error, 6000); return; }
-  if (!res.txs.length) { toast("No encontré compras/ventas válidas en el texto. " + (res.skipped[0] || ""), 6000); return; }
+  if (!res.txs.length) { toast("No encontré compras/ventas válidas. " + (res.skipped[0] || ""), 6000); return; }
 
   const existing = new Set(state.transactions.map(t => `${t.date}|${t.type}|${t.ticker}|${t.qty}|${t.price}`));
   const nuevos = res.txs.filter(t => !existing.has(`${t.date}|${t.type}|${t.ticker}|${t.qty}|${t.price}`));
   const dups = res.txs.length - nuevos.length;
 
   if (!nuevos.length) { toast(`Las ${res.txs.length} operaciones ya estaban registradas — nada que importar.`, 5000); return; }
-  const resumen = `Se importarán ${nuevos.length} operaciones` +
+  const resumen = `Se importarán ${nuevos.length} operaciones a ${acc(accountId)?.name}` +
     (dups ? ` (${dups} duplicadas se omiten)` : "") +
-    (res.skipped.length ? ` — ${res.skipped.length} filas ignoradas (no eran compras/ventas)` : "") +
+    (res.skipped.length ? ` — ${res.skipped.length} filas ignoradas` : "") +
     `.\n\nEjemplo: ${nuevos[0].type === "buy" ? "Compra" : "Venta"} de ${nuevos[0].qty} ${nuevos[0].ticker} @ ${nuevos[0].price} el ${nuevos[0].date}.\n\n¿Continuar?`;
   if (!confirm(resumen)) return;
 
@@ -1126,6 +1506,126 @@ function runImport() {
 /* ============================================================
    EVENTOS
    ============================================================ */
+document.querySelectorAll(".tab").forEach(tab => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    tab.classList.add("active");
+    document.getElementById("panel-" + tab.dataset.tab).classList.add("active");
+  });
+});
+
+// ---- Formulario de operaciones ----
+document.getElementById("txForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const ticker = document.getElementById("fTicker").value.trim().toUpperCase();
+  const account = document.getElementById("fAccount").value;
+  const qty = parseFloat(document.getElementById("fQty").value);
+  const price = parseFloat(document.getElementById("fPrice").value);
+  if (!ticker || !account || !(qty > 0) || !(price >= 0)) { toast("Revisa la cuenta, el ticker, la cantidad y el precio."); return; }
+  const type = document.getElementById("fType").value;
+
+  if (type === "sell") {
+    const pf = computePortfolio();
+    const p = pf.positions.find(x => x.ticker === ticker && x.account === account);
+    const held = p ? p.shares : 0;
+    if (qty > held + 1e-9 && !confirm(`Solo tienes ${fmtNum(held)} de ${ticker} en esa cuenta. ¿Registrar la venta de todos modos?`)) return;
+  }
+
+  state.transactions.push({
+    id: uid(), account, type, ticker,
+    name: document.getElementById("fName").value.trim(),
+    sector: document.getElementById("fSector").value,
+    qty, price,
+    fees: parseFloat(document.getElementById("fFees").value) || 0,
+    date: document.getElementById("fDate").value || todayStr()
+  });
+  saveState();
+  renderAll();
+  e.target.reset();
+  document.getElementById("fDate").value = todayStr();
+  document.getElementById("fFees").value = "0";
+  toast(`✅ ${type === "buy" ? "Compra" : "Venta"} de ${ticker} registrada`);
+  if (!state.prices[ticker]) refreshPrices(true);
+});
+
+// ---- Formulario de movimientos de dinero ----
+function syncCfForm() {
+  const kind = document.getElementById("cfKind").value;
+  const isTransfer = kind === "transfer";
+  document.getElementById("cfToWrap").style.display = isTransfer ? "" : "none";
+  document.getElementById("cfFromLabel").textContent =
+    kind === "deposit" ? "Cuenta que recibe" :
+    kind === "transfer" ? "Cuenta origen" : "Cuenta";
+  const from = acc(document.getElementById("cfFrom").value);
+  const to = acc(document.getElementById("cfTo").value);
+  const cross = isTransfer && from && to && from.currency !== to.currency;
+  document.getElementById("cfAmountToWrap").style.display = cross ? "" : "none";
+  document.getElementById("cfAmountLabel").textContent =
+    "Monto" + (from ? ` (${isTransfer ? "sale en " : ""}${from.currency})` : "");
+  if (cross && to) document.querySelector("#cfAmountToWrap label").textContent = `Monto recibido (${to.currency})`;
+}
+document.getElementById("cfKind").addEventListener("change", syncCfForm);
+document.getElementById("cfFrom").addEventListener("change", syncCfForm);
+document.getElementById("cfTo").addEventListener("change", syncCfForm);
+
+document.getElementById("cfForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const kind = document.getElementById("cfKind").value;
+  const from = document.getElementById("cfFrom").value;
+  const to = kind === "transfer" ? document.getElementById("cfTo").value : null;
+  const amount = parseFloat(document.getElementById("cfAmount").value);
+  if (!from || !(amount > 0)) { toast("Revisa la cuenta y el monto."); return; }
+  if (kind === "transfer") {
+    if (!to || to === from) { toast("Elige una cuenta destino distinta."); return; }
+  }
+  const A = acc(from), B = to ? acc(to) : null;
+  let amountTo = null;
+  if (kind === "transfer" && A && B && A.currency !== B.currency) {
+    amountTo = parseFloat(document.getElementById("cfAmountTo").value);
+    if (!(amountTo > 0)) { toast(`Indica cuántos ${B.currency} recibiste por tus ${A.currency}.`); return; }
+  }
+  state.cashflows.push({
+    id: uid(), kind, from, to, amount, amountTo,
+    date: document.getElementById("cfDate").value || todayStr(),
+    note: document.getElementById("cfNote").value.trim()
+  });
+  saveState();
+  renderAll();
+  e.target.reset();
+  document.getElementById("cfDate").value = todayStr();
+  syncCfForm();
+  toast("✅ Movimiento registrado");
+});
+
+// ---- Nueva cuenta ----
+document.getElementById("accForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const name = document.getElementById("accName").value.trim();
+  if (!name) return;
+  state.accounts.push({
+    id: uid(), name,
+    type: document.getElementById("accType").value,
+    currency: document.getElementById("accCurrency").value
+  });
+  saveState();
+  renderAll();
+  e.target.reset();
+  toast(`✅ Cuenta "${name}" creada`);
+});
+
+// ---- Tipo de cambio manual ----
+document.getElementById("fxRate").addEventListener("change", e => {
+  const v = parseFloat(e.target.value);
+  if (v > 0) {
+    state.fx = { rate: v, updatedAt: new Date().toISOString(), manual: true };
+    saveState();
+    renderAll();
+    toast(`Tipo de cambio fijado en ${v.toFixed(4)} MXN/USD`);
+  }
+});
+
+// ---- Importador ----
 document.getElementById("btnCsvFile").addEventListener("click", () => document.getElementById("csvFile").click());
 document.getElementById("csvFile").addEventListener("change", e => {
   const file = e.target.files[0];
@@ -1141,9 +1641,9 @@ document.getElementById("csvFile").addEventListener("change", e => {
 document.getElementById("btnDoImport").addEventListener("click", runImport);
 document.getElementById("btnTemplate").addEventListener("click", () => {
   const csv = "fecha,operacion,emisora,titulos,precio,comision,nombre,sector\n" +
-    "15/03/2026,Compra,AAPL,10,3450.50,29.90,Apple,Tecnología\n" +
+    "15/03/2026,Compra,AAPL,10,180.50,1.00,Apple,Tecnología\n" +
     "20/04/2026,Compra,NAFTRACISHRS,50,118.20,15.00,Naftrac (IPC),ETF / Índice\n" +
-    "02/05/2026,Venta,AAPL,4,3610.00,29.90,Apple,Tecnología\n";
+    "02/05/2026,Venta,AAPL,4,210.00,1.00,Apple,Tecnología\n";
   const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -1151,57 +1651,20 @@ document.getElementById("btnTemplate").addEventListener("click", () => {
   a.click();
   URL.revokeObjectURL(a.href);
 });
+document.getElementById("importAccount").addEventListener("change", e => {
+  const a = acc(e.target.value);
+  document.getElementById("chkMx").checked = a?.currency === "MXN";
+});
 
+// ---- Moneda de visualización ----
 document.getElementById("selCurrency").addEventListener("change", e => {
   state.settings.currency = e.target.value;
   saveState();
   renderAll();
-  toast("Montos mostrados en " + e.target.value);
+  toast("Totales mostrados en " + e.target.value);
 });
 
-document.querySelectorAll(".tab").forEach(tab => {
-  tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
-    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-    tab.classList.add("active");
-    document.getElementById("panel-" + tab.dataset.tab).classList.add("active");
-  });
-});
-
-document.getElementById("txForm").addEventListener("submit", e => {
-  e.preventDefault();
-  const ticker = document.getElementById("fTicker").value.trim().toUpperCase();
-  const qty = parseFloat(document.getElementById("fQty").value);
-  const price = parseFloat(document.getElementById("fPrice").value);
-  if (!ticker || !(qty > 0) || !(price >= 0)) { toast("Revisa el ticker, la cantidad y el precio."); return; }
-  const type = document.getElementById("fType").value;
-
-  if (type === "sell") {
-    const pf = computePortfolio();
-    const p = pf.positions.find(x => x.ticker === ticker);
-    const held = p ? p.shares : 0;
-    if (qty > held + 1e-9 && !confirm(`Solo tienes ${fmtNum(held)} acciones de ${ticker}. ¿Registrar la venta de todos modos?`)) return;
-  }
-
-  state.transactions.push({
-    id: uid(), type, ticker,
-    name: document.getElementById("fName").value.trim(),
-    sector: document.getElementById("fSector").value,
-    qty, price,
-    fees: parseFloat(document.getElementById("fFees").value) || 0,
-    date: document.getElementById("fDate").value || todayStr()
-  });
-  saveState();
-  renderAll();
-  e.target.reset();
-  document.getElementById("fDate").value = todayStr();
-  document.getElementById("fFees").value = "0";
-  toast(`${type === "buy" ? "✅ Compra" : "✅ Venta"} de ${ticker} registrada`);
-  if (!state.prices[ticker]) refreshPrices(true);
-});
-
-document.getElementById("btnRefresh").addEventListener("click", () => refreshPrices(false));
-
+// ---- Exportar / Importar respaldo ----
 document.getElementById("btnExport").addEventListener("click", () => {
   const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
   const a = document.createElement("a");
@@ -1220,13 +1683,18 @@ document.getElementById("fileImport").addEventListener("change", e => {
   reader.onload = () => {
     try {
       const data = JSON.parse(reader.result);
-      if (!Array.isArray(data.transactions)) throw new Error("Formato inválido");
-      if (!confirm(`El respaldo tiene ${data.transactions.length} operaciones. Esto reemplazará tus datos actuales. ¿Continuar?`)) return;
+      if (!Array.isArray(data.transactions) && !Array.isArray(data.cashflows)) throw new Error("Formato inválido");
+      const nTx = (data.transactions || []).length, nCf = (data.cashflows || []).length;
+      if (!confirm(`El respaldo tiene ${nTx} operaciones y ${nCf} movimientos. Esto reemplazará tus datos actuales. ¿Continuar?`)) return;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       state = {
-        transactions: data.transactions,
-        prices: data.prices || {},
-        history: data.history || []
+        version: 2,
+        accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
+        transactions: [], cashflows: [], prices: {},
+        fx: { rate: 18.5, updatedAt: null, manual: true },
+        history: [], settings: { currency: "MXN" }
       };
+      loadState();
       saveState();
       renderAll();
       toast("✅ Respaldo restaurado");
@@ -1241,9 +1709,15 @@ document.getElementById("fileImport").addEventListener("change", e => {
    ============================================================ */
 loadState();
 document.getElementById("fDate").value = todayStr();
-document.getElementById("selCurrency").value = state.settings.currency || "USD";
+document.getElementById("cfDate").value = todayStr();
+document.getElementById("selCurrency").value = dispCur();
 renderAll();
-if (state.transactions.length) refreshPrices(true);
+syncCfForm();
+{
+  const ia = acc(document.getElementById("importAccount").value);
+  document.getElementById("chkMx").checked = ia?.currency === "MXN";
+}
+if (state.transactions.length || state.cashflows.length) refreshPrices(true);
 
 // PWA: permite instalar la app en el teléfono y usarla sin conexión
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
