@@ -44,7 +44,9 @@ El usuario puede crear más cuentas (NU, Revolut, Bitso, coleccionables) en MXN 
   prices:       { TICKER: { price, prevClose, currency, updatedAt, manual } },
   fx:           { rate, updatedAt, manual },   // pesos por dólar
   history:      [{ date, valueMXN, aportMXN }],
-  settings:     { currency: "MXN"|"USD" }      // moneda de visualización
+  history_snapshots: [{ date, accounts: { id: valor }, fx, note }],   // cortes de patrimonio
+  settings:     { currency: "MXN"|"USD",       // moneda de visualización
+                  scope: "all"|"g:<grupo>"|"<id de cuenta>" }         // ámbito de análisis
 }
 ```
 
@@ -57,6 +59,30 @@ Notas del motor de cálculo (`computePortfolio`):
   registrados, cae a un cálculo basado solo en operaciones.
 - Precios y tipo de cambio (`MXN=X`) vienen de Yahoo Finance vía proxies CORS; un precio
   puesto a mano queda marcado `manual: true` y no se sobrescribe al actualizar.
+
+## Ámbito de análisis (`settings.scope`)
+
+El selector del encabezado recorta **toda** la app: dashboard, posiciones, operaciones,
+por año, dólar y diversificación. Se puede ver todo junto, un grupo (el grupo sale de la
+primera palabra del nombre, así que las tres cuentas GBM caen juntas) o una sola cuenta.
+
+`computePortfolio(scope)` acepta el ámbito como argumento y devuelve además `dentro(id)`,
+`esParcial` y `txsScope`, que las demás funciones (`computeAnual`, `computeFX`,
+`flujosExternos`, `snapMXN`) usan para filtrarse igual.
+
+**Regla clave:** un traspaso que cruza la frontera del ámbito deja de ser interno y cuenta
+como aportación o retiro. Lo que Smart Cash le pasa a Trading USA es dinero nuevo desde el
+punto de vista de Trading USA, y así "ganancia = valor de hoy − lo que le metí" sigue
+siendo cierto dentro de cualquier recorte. Por eso los renglones del desglose no suman el
+aportado total: el mismo peso puede haber pasado por varias cuentas.
+
+Llamadas que **deben** ir con `computePortfolio("all")` aunque haya un ámbito activo:
+`refreshPrices` (precios de todas las cuentas), `recordHistorySnapshot` y `guardarCorte`
+(los cortes guardan todo), `actualizarSaldo` y la validación de ventas.
+
+El rendimiento anual usa Dietz modificado; si casi todo el dinero del año entró al final,
+la base ponderada queda minúscula y el porcentaje se dispara, así que se muestra `n/d`
+(la ganancia en pesos sí se enseña).
 
 ## Importar estados de cuenta
 

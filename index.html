@@ -194,6 +194,9 @@
   .price-input { width: 90px; text-align: right; padding: 5px 8px; font-size: 13px; }
   .fx-input { width: 80px; text-align: right; padding: 5px 8px; font-size: 13px; }
   .muted-note { font-size: 12px; color: var(--text-dim); margin-top: 10px; line-height: 1.5; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: rgba(88, 166, 255, .08); }
+  tr.row-active td { background: rgba(88, 166, 255, .14); }
   footer { text-align: center; color: var(--text-dim); font-size: 12px; padding: 20px 0 10px; }
 </style>
 </head>
@@ -207,6 +210,7 @@
     </div>
     <div class="header-actions">
       <span class="last-update" id="lastUpdate"></span>
+      <select id="selScope" title="Analiza todo junto o una cuenta / grupo por separado" style="width:auto"></select>
       <select id="selCurrency" title="Moneda en la que se muestran los totales" style="width:auto">
         <option value="MXN">Ver en MXN $</option>
         <option value="USD">Ver en USD $</option>
@@ -228,9 +232,15 @@
     <button class="tab" data-tab="diversification">🎯 Diversificación</button>
   </div>
 
+  <div id="scopeBanner"></div>
+
   <!-- ================= DASHBOARD ================= -->
   <div class="tab-panel active" id="panel-dashboard">
     <div class="cards" id="summaryCards"></div>
+    <div class="panel" id="breakdownPanel">
+      <h3>Cada cuenta por separado <span class="hint">(pulsa una fila para analizarla sola)</span></h3>
+      <div id="breakdownTable"></div>
+    </div>
     <div class="grid-2">
       <div class="panel">
         <h3>Distribución por cuenta</h3>
@@ -557,7 +567,7 @@ let state = {
   fx: { rate: 18.50, updatedAt: null, manual: true },  // pesos por dólar
   history: [],        // {date, valueMXN, aportMXN}
   history_snapshots: [],  // {date, accounts:{id:valor}, fx, note} — cortes de patrimonio
-  settings: { currency: "MXN" }
+  settings: { currency: "MXN", scope: "all" }   // scope: "all" | "g:<grupo>" | <id de cuenta>
 };
 
 function loadState() {
@@ -568,7 +578,7 @@ function loadState() {
     state.transactions = Array.isArray(p.transactions) ? p.transactions : [];
     state.cashflows = Array.isArray(p.cashflows) ? p.cashflows : [];
     state.prices = p.prices && typeof p.prices === "object" ? p.prices : {};
-    state.settings = { currency: "MXN", ...(p.settings || {}) };
+    state.settings = { currency: "MXN", scope: "all", ...(p.settings || {}) };
     state.history_snapshots = Array.isArray(p.history_snapshots) ? p.history_snapshots : [];
     state.fx = p.fx && p.fx.rate ? p.fx : state.fx;
     state.accounts = Array.isArray(p.accounts) && p.accounts.length ? p.accounts : JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS));
@@ -638,16 +648,68 @@ const PALETTE = ["#58a6ff", "#3fb950", "#d29922", "#f778ba", "#a371f7", "#f85149
                  "#39c5cf", "#ffa657", "#7ee787", "#79c0ff", "#d2a8ff", "#ff9bce"];
 
 /* ============================================================
+   ÁMBITO DE ANÁLISIS
+   Todo el patrimonio junto, un grupo (GBM = sus tres cuentas) o
+   una sola cuenta. Un traspaso que cruza la frontera del ámbito
+   deja de ser interno y cuenta como aportación o retiro, para que
+   "ganancia = valor de hoy − lo que le metí" siga siendo cierto
+   dentro de cualquier recorte.
+   ============================================================ */
+// El grupo sale de la primera palabra del nombre ("GBM Trading MX" -> "GBM"),
+// salvo que la cuenta traiga uno propio.
+const grupoDe = a => (a && (a.group || String(a.name || "").trim().split(/\s+/)[0])) || "Otras";
+
+function grupos() {
+  const m = {};
+  for (const a of state.accounts) (m[grupoDe(a)] = m[grupoDe(a)] || []).push(a);
+  return Object.entries(m).filter(([, list]) => list.length > 1);
+}
+
+const curScope = () => state.settings.scope || "all";
+
+// Devuelve un Set con los ids del ámbito, o null si es "todo".
+function scopeSet(sc) {
+  sc = sc || "all";
+  if (sc === "all") return null;
+  if (sc.slice(0, 2) === "g:") {
+    const g = sc.slice(2);
+    const ids = state.accounts.filter(a => grupoDe(a) === g).map(a => a.id);
+    return ids.length ? new Set(ids) : null;
+  }
+  return acc(sc) ? new Set([sc]) : null;
+}
+
+function scopeName(sc) {
+  sc = sc || "all";
+  if (sc === "all") return "Todo el patrimonio";
+  if (sc.slice(0, 2) === "g:") return sc.slice(2);
+  return acc(sc)?.name || sc;
+}
+
+function setScope(sc) {
+  state.settings.scope = sc || "all";
+  annualYear = null;
+  saveState();
+  renderAll();
+}
+
+/* ============================================================
    MOTOR DE CÁLCULO
    ============================================================ */
-function computePortfolio() {
+function computePortfolio(sc) {
   const sortByDate = arr => [...arr].sort((a, b) =>
     a.date === b.date ? (a.id > b.id ? 1 : -1) : (a.date > b.date ? 1 : -1));
 
+  const scope = sc === undefined ? curScope() : sc;
+  const ids = scopeSet(scope);
+  const resolve = id => acc(id) ? id : (state.accounts.find(a => a.type === "broker")?.id || id);
+  const dentro = id => !ids || ids.has(resolve(id));
+  const txsScope = state.transactions.filter(t => dentro(t.account));
+
   // ---- Posiciones por cuenta+ticker (costo promedio) ----
   const posMap = {};
-  for (const tx of sortByDate(state.transactions)) {
-    const account = acc(tx.account) ? tx.account : (state.accounts.find(a => a.type === "broker")?.id || tx.account);
+  for (const tx of sortByDate(txsScope)) {
+    const account = resolve(tx.account);
     const key = account + "|" + tx.ticker;
     if (!posMap[key]) posMap[key] = {
       key, account, ticker: tx.ticker, currency: acc(account)?.currency || "USD",
@@ -700,27 +762,45 @@ function computePortfolio() {
   // ---- Efectivo y flujos por cuenta ----
   const accounts = {};
   for (const a of state.accounts) {
+    if (!dentro(a.id)) continue;
     accounts[a.id] = { ...a, cash: 0, deposits: 0, withdrawals: 0, yields: 0, fees: 0,
+                       traspIn: 0, traspOut: 0,
                        posValue: 0, posCost: 0, realized: 0, unreal: 0, dayChange: 0, hasAllPrices: true };
   }
-  const ensure = id => accounts[id] || (accounts[id] = { id, name: id, type: "broker", currency: "USD", cash: 0, deposits: 0, withdrawals: 0, yields: 0, fees: 0, posValue: 0, posCost: 0, realized: 0, unreal: 0, dayChange: 0, hasAllPrices: true });
+  const ensure = id => accounts[id] || (accounts[id] = { id, name: id, type: "broker", currency: "USD", cash: 0, deposits: 0, withdrawals: 0, yields: 0, fees: 0, traspIn: 0, traspOut: 0, posValue: 0, posCost: 0, realized: 0, unreal: 0, dayChange: 0, hasAllPrices: true });
 
+  let traspIn = 0, traspOut = 0;   // traspasos que cruzan la frontera del ámbito
   for (const cf of state.cashflows) {
     const amount = Number(cf.amount) || 0;
-    if (cf.kind === "deposit") { const A = ensure(cf.from); A.cash += amount; A.deposits += amount; }
-    else if (cf.kind === "withdraw") { const A = ensure(cf.from); A.cash -= amount; A.withdrawals += amount; }
-    else if (cf.kind === "yield") { const A = ensure(cf.from); A.cash += amount; A.yields += amount; }
-    else if (cf.kind === "fee") { const A = ensure(cf.from); A.cash -= amount; A.fees += amount; }
-    else if (cf.kind === "transfer") {
-      const A = ensure(cf.from), B = ensure(cf.to);
-      const amountTo = Number(cf.amountTo) || (A.currency === B.currency ? amount : convert(amount, A.currency, B.currency));
-      A.cash -= amount;
-      B.cash += amountTo;
+    if (cf.kind === "transfer") {
+      const curA = acc(resolve(cf.from))?.currency || "MXN";
+      const curB = acc(resolve(cf.to))?.currency || "MXN";
+      const amountTo = Number(cf.amountTo) || (curA === curB ? amount : convert(amount, curA, curB));
+      const inA = dentro(cf.from), inB = dentro(cf.to);
+      if (inA && inB) {                       // movimiento interno: no entra ni sale dinero
+        ensure(resolve(cf.from)).cash -= amount;
+        ensure(resolve(cf.to)).cash += amountTo;
+      } else if (inA) {                       // sale del ámbito: cuenta como retiro
+        const A = ensure(resolve(cf.from));
+        A.cash -= amount; A.withdrawals += amount; A.traspOut += amount;
+        traspOut += toDisp(amount, curA);
+      } else if (inB) {                       // entra al ámbito: cuenta como aportación
+        const B = ensure(resolve(cf.to));
+        B.cash += amountTo; B.deposits += amountTo; B.traspIn += amountTo;
+        traspIn += toDisp(amountTo, curB);
+      }
+      continue;
     }
+    if (!dentro(cf.from)) continue;
+    const A = ensure(resolve(cf.from));
+    if (cf.kind === "deposit") { A.cash += amount; A.deposits += amount; }
+    else if (cf.kind === "withdraw") { A.cash -= amount; A.withdrawals += amount; }
+    else if (cf.kind === "yield") { A.cash += amount; A.yields += amount; }
+    else if (cf.kind === "fee") { A.cash -= amount; A.fees += amount; }
   }
   // Compras restan efectivo; ventas lo suman
-  for (const tx of state.transactions) {
-    const A = ensure(acc(tx.account) ? tx.account : "trading_usa");
+  for (const tx of txsScope) {
+    const A = ensure(resolve(tx.account));
     const qty = Number(tx.qty) || 0, price = Number(tx.price) || 0, fees = Number(tx.fees) || 0;
     if (tx.type === "buy") A.cash -= qty * price + fees;
     else A.cash += qty * price - fees;
@@ -755,7 +835,7 @@ function computePortfolio() {
   }
   patrimonio = efectivo + invertido;
   const aportadoNeto = aportado - retirado;
-  const hasCashflows = state.cashflows.some(c => c.kind === "deposit");
+  const hasCashflows = aportado > 0.0001 || retirado > 0.0001;
   // Con depósitos registrados: ganancia real global (incluye tipo de cambio).
   // Sin ellos: ganancia basada solo en operaciones y rendimientos.
   const ganancia = hasCashflows ? patrimonio - aportadoNeto
@@ -765,7 +845,8 @@ function computePortfolio() {
 
   return { positions, closed, accounts, patrimonio, efectivo, invertido, aportadoNeto, hasCashflows,
            ganancia, gananciaPct, totalUnreal, totalRealized, totalYields, totalFees,
-           totalDayChange, totalPosCost, hasAllPrices };
+           totalDayChange, totalPosCost, hasAllPrices,
+           scope, ids, dentro, esParcial: !!ids, traspIn, traspOut, txsScope };
 }
 
 /* ============================================================
@@ -802,7 +883,7 @@ async function fetchQuote(symbol) {
 let refreshing = false;
 async function refreshPrices(silent = false) {
   if (refreshing) return;
-  const pf = computePortfolio();
+  const pf = computePortfolio("all");   // los precios se piden para todas las cuentas, no solo el ámbito
   const tickers = [...new Set(pf.positions.map(p => p.ticker))];
 
   refreshing = true;
@@ -844,7 +925,7 @@ async function refreshPrices(silent = false) {
 }
 
 function recordHistorySnapshot() {
-  const pf = computePortfolio();
+  const pf = computePortfolio("all");   // el histórico diario siempre es del patrimonio completo
   if (pf.patrimonio <= 0) return;
   const valueMXN = convert(pf.patrimonio, dispCur(), "MXN");
   const aportMXN = convert(pf.hasCashflows ? pf.aportadoNeto : pf.totalPosCost, dispCur(), "MXN");
@@ -1082,12 +1163,14 @@ function renderAll() {
   renderCharts(pf);
   renderAccounts(pf);
   renderPositions(pf);
-  renderTransactions();
-  renderCashflows();
+  renderTransactions(pf);
+  renderCashflows(pf);
   renderAnual(pf);
   renderFX(pf);
   renderDiversification(pf);
   renderSelectors();
+  renderScope(pf);
+  renderBreakdown(pf);
   const anyPrice = Object.values(state.prices).map(p => p.updatedAt).filter(Boolean).sort().pop();
   document.getElementById("lastUpdate").textContent =
     anyPrice ? "Últ. act: " + new Date(anyPrice).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "";
@@ -1112,19 +1195,23 @@ function renderSummary(pf) {
   const dayPct = dayBase > 0 ? (pf.totalDayChange / dayBase) * 100 : null;
   c.innerHTML = `
     <div class="card">
-      <div class="label">Patrimonio total</div>
+      <div class="label">${pf.esParcial ? "Valor de " + esc(scopeName(pf.scope)) : "Patrimonio total"}</div>
       <div class="value">${fmtMoney(pf.patrimonio)}${pf.hasAllPrices ? "" : " *"}</div>
       <div class="sub ${signClass(pf.totalDayChange)}">${pf.totalDayChange ? fmtMoney(pf.totalDayChange) + (dayPct != null ? " (" + fmtPct(dayPct) + ") hoy" : "") : "—"}</div>
     </div>
     <div class="card">
       <div class="label">${pf.hasCashflows ? "Dinero aportado (neto)" : "Costo de posiciones"}</div>
       <div class="value">${fmtMoney(pf.hasCashflows ? pf.aportadoNeto : pf.totalPosCost)}</div>
-      <div class="sub neutral">${pf.hasCashflows ? "desde tu banco" : "registra depósitos en Cuentas para más precisión"}</div>
+      <div class="sub neutral">${!pf.hasCashflows ? "registra depósitos en Cuentas para más precisión"
+        : pf.esParcial ? (pf.traspIn ? "de tu banco y de tus otras cuentas" : "lo que le metiste a esta cuenta")
+        : "desde tu banco"}</div>
     </div>
     <div class="card">
       <div class="label">Ganancia total</div>
       <div class="value ${signClass(pf.ganancia)}">${fmtMoney(pf.ganancia)}</div>
-      <div class="sub ${signClass(pf.ganancia)}">${fmtPct(pf.gananciaPct)}${pf.hasCashflows ? " · incluye FX y rendimientos" : ""}</div>
+      <div class="sub ${signClass(pf.ganancia)}">${fmtPct(pf.gananciaPct)}${!pf.hasCashflows ? ""
+        : Object.values(pf.accounts).some(A => A.currency === "USD") ? " · incluye FX y rendimientos"
+        : " · incluye rendimientos"}</div>
     </div>
     <div class="card">
       <div class="label">Invertido / Efectivo</div>
@@ -1182,13 +1269,31 @@ function renderCharts(pf) {
     .sort((a, b) => toDisp(b.value, b.cur) - toDisp(a.value, a.cur));
   document.getElementById("chartPnL").innerHTML = barChartPnL(pnl);
 
-  document.getElementById("chartHistory").innerHTML = lineChart(state.history);
+  // Evolución: el histórico diario es global, así que dentro de un ámbito se
+  // reconstruye la serie a partir de los cortes guardados.
+  document.getElementById("chartHistory").innerHTML =
+    lineChart(pf.esParcial ? serieDeCortes(pf) : state.history);
+}
+
+// Serie {date, valueMXN, aportMXN} del ámbito, a partir de los cortes de patrimonio
+function serieDeCortes(pf) {
+  const flujos = flujosExternos(pf);
+  const acumHasta = fecha => flujos.filter(f => f.date <= fecha).reduce((s, f) => s + f.mxn, 0);
+  const pts = (state.history_snapshots || [])
+    .filter(s => snapCubre(s, pf.dentro))
+    .sort((a, b) => a.date > b.date ? 1 : -1)
+    .map(s => ({ date: s.date, valueMXN: snapMXN(s, pf.dentro), aportMXN: acumHasta(s.date) }));
+  pts.push({ date: todayStr(), valueMXN: convert(pf.patrimonio, dispCur(), "MXN"),
+             aportMXN: convert(pf.aportadoNeto, dispCur(), "MXN") });
+  return pts;
 }
 
 function renderAccounts(pf) {
   const grid = document.getElementById("accCards");
   const typeLabel = { cash: "Efectivo con rendimiento", broker: "Inversiones" };
-  grid.innerHTML = state.accounts.map(a => {
+  const visibles = state.accounts.filter(a => pf.accounts[a.id]);
+  if (!visibles.length) { grid.innerHTML = `<div class="empty-state">Sin cuentas en este ámbito.</div>`; return; }
+  grid.innerHTML = visibles.map(a => {
     const A = pf.accounts[a.id];
     const gains = A.unreal + A.realized + A.yields - A.fees;
     const custom = !DEFAULT_ACCOUNTS.some(d => d.id === a.id);
@@ -1266,13 +1371,16 @@ function renderPositions(pf) {
   }
 }
 
-function renderTransactions() {
+function renderTransactions(pf) {
   const el = document.getElementById("txTable");
-  if (!state.transactions.length) {
-    el.innerHTML = `<div class="empty-state"><div class="big">🧾</div>Registra tu primera operación con el formulario de arriba.</div>`;
+  const fuente = (pf && pf.txsScope) || state.transactions;
+  if (!fuente.length) {
+    el.innerHTML = state.transactions.length
+      ? `<div class="empty-state"><div class="big">🧾</div>No hay operaciones en <b>${esc(scopeName(curScope()))}</b>.</div>`
+      : `<div class="empty-state"><div class="big">🧾</div>Registra tu primera operación con el formulario de arriba.</div>`;
     return;
   }
-  const txs = [...state.transactions].sort((a, b) => a.date === b.date ? (a.id > b.id ? -1 : 1) : (a.date > b.date ? -1 : 1));
+  const txs = [...fuente].sort((a, b) => a.date === b.date ? (a.id > b.id ? -1 : 1) : (a.date > b.date ? -1 : 1));
   let rows = "";
   for (const tx of txs) {
     const a = acc(tx.account);
@@ -1295,14 +1403,18 @@ function renderTransactions() {
     <tbody>${rows}</tbody></table>`;
 }
 
-function renderCashflows() {
+function renderCashflows(pf) {
   const el = document.getElementById("cfTable");
-  if (!state.cashflows.length) {
-    el.innerHTML = `<div class="empty-state"><div class="big">🏦</div>Registra tus depósitos, transferencias y rendimientos con el formulario de arriba.</div>`;
+  const dentro = (pf && pf.dentro) || (() => true);
+  const fuente = state.cashflows.filter(c => dentro(c.from) || (c.to && dentro(c.to)));
+  if (!fuente.length) {
+    el.innerHTML = state.cashflows.length
+      ? `<div class="empty-state"><div class="big">🏦</div>No hay movimientos en <b>${esc(scopeName(curScope()))}</b>.</div>`
+      : `<div class="empty-state"><div class="big">🏦</div>Registra tus depósitos, transferencias y rendimientos con el formulario de arriba.</div>`;
     return;
   }
   const kinds = { deposit: "⬇ Depósito", withdraw: "⬆ Retiro", transfer: "⇄ Transferencia", yield: "💰 Rendimiento", fee: "💸 Comisión" };
-  const flows = [...state.cashflows].sort((a, b) => a.date === b.date ? (a.id > b.id ? -1 : 1) : (a.date > b.date ? -1 : 1));
+  const flows = [...fuente].sort((a, b) => a.date === b.date ? (a.id > b.id ? -1 : 1) : (a.date > b.date ? -1 : 1));
   let rows = "";
   for (const cf of flows) {
     const A = acc(cf.from), B = cf.to ? acc(cf.to) : null;
@@ -1311,6 +1423,9 @@ function renderCashflows() {
     if (cf.kind === "transfer" && B) {
       detail += " → " + esc(B.name);
       if (A?.currency !== B?.currency && cf.amountTo) monto += " → " + fmtMoney(cf.amountTo, B.currency);
+      if (pf && pf.esParcial && dentro(cf.from) !== dentro(cf.to)) {
+        detail += ` <span class="sector-tag" title="Cruza la frontera de este ámbito, así que aquí cuenta como ${dentro(cf.to) ? "aportación" : "retiro"}">${dentro(cf.to) ? "entra" : "sale"}</span>`;
+      }
     }
     rows += `<tr>
       <td class="left">${esc(cf.date)}</td>
@@ -1332,39 +1447,70 @@ function renderCashflows() {
    ============================================================ */
 let annualYear = null;   // año seleccionado en la pestaña; null = el más reciente
 
-function snapMXN(s) {
+// Valor de un corte en pesos. Con un ámbito activo suma solo sus cuentas;
+// `cubre` dice si el corte llegó a registrar alguna de ellas.
+function snapMXN(s, dentro) {
   let t = 0;
   for (const id of Object.keys(s.accounts || {})) {
+    if (dentro && !dentro(id)) continue;
     const a = acc(id);
     const v = Number(s.accounts[id]) || 0;
     t += (a && a.currency === "USD") ? v * (Number(s.fx) || fxRate()) : v;
   }
   return t;
 }
+// ¿Este corte llegó a registrar alguna cuenta del ámbito?
+const snapCubre = (s, dentro) =>
+  Object.keys(s.accounts || {}).some(id => !dentro || dentro(id));
+
+// Tipo de cambio vigente en una fecha: el del corte más cercano anterior.
+// Así una aportación vieja se valúa con el dólar de su día, no con el de hoy.
+function fxEnFecha(fecha) {
+  const snaps = [...(state.history_snapshots || [])].sort((a, b) => a.date > b.date ? 1 : -1);
+  const prev = snaps.filter(s => s.date <= fecha && s.fx).pop();
+  return Number((prev || snaps.find(s => s.fx) || {}).fx) || fxRate();
+}
+
+// Dinero que entra o sale del ámbito, en pesos y ordenado por fecha.
+// Sin ámbito son los depósitos y retiros del banco; con ámbito, además, los
+// traspasos que cruzan su frontera (lo que Smart Cash le pasa a Trading USA
+// es una aportación desde el punto de vista de Trading USA).
+function flujosExternos(pf) {
+  const dentro = (pf && pf.dentro) || (() => true);
+  const enMXN = (monto, cur, fecha) => cur === "USD" ? monto * fxEnFecha(fecha) : monto;
+  const flujos = [];
+  for (const c of state.cashflows) {
+    if (c.kind === "deposit" || c.kind === "withdraw") {
+      if (!dentro(c.from)) continue;
+      const mxn = enMXN(Number(c.amount) || 0, acc(c.from)?.currency, c.date);
+      flujos.push({ date: c.date, mxn: c.kind === "deposit" ? mxn : -mxn });
+    } else if (c.kind === "transfer") {
+      const inA = dentro(c.from), inB = dentro(c.to);
+      if (inA === inB) continue;                       // interno (o ajeno por completo)
+      if (inB) {
+        const curA = acc(c.from)?.currency, curB = acc(c.to)?.currency || "MXN";
+        const monto = Number(c.amountTo) ||
+          (curA === curB ? Number(c.amount) : convert(Number(c.amount), curA, curB));
+        flujos.push({ date: c.date, mxn: enMXN(monto, curB, c.date) });
+      } else {
+        flujos.push({ date: c.date, mxn: -enMXN(Number(c.amount) || 0, acc(c.from)?.currency, c.date) });
+      }
+    }
+  }
+  return flujos.sort((a, b) => a.date > b.date ? 1 : -1);
+}
 
 function computeAnual(pf) {
   const snaps = [...(state.history_snapshots || [])].sort((a, b) => a.date > b.date ? 1 : -1);
   const hoyMXN = convert(pf.patrimonio, dispCur(), "MXN");
   const hoy = todayStr();
+  const dentro = pf.dentro || (() => true);
+  const flujos = flujosExternos(pf);
 
-  // Flujos externos (banco <-> GBM). Las transferencias entre cuentas propias no cuentan.
-  // Un flujo en dólares se valúa con el tipo de cambio de SU fecha (el del corte más
-  // cercano anterior), no con el de hoy: si no, una aportación vieja se vería distinta.
-  const fxDe = fecha => {
-    const prev = snaps.filter(s => s.date <= fecha && s.fx).pop();
-    return Number((prev || snaps.find(s => s.fx) || {}).fx) || fxRate();
-  };
-  const flujos = state.cashflows
-    .filter(c => c.kind === "deposit" || c.kind === "withdraw")
-    .map(c => {
-      const a = acc(c.from);
-      const mxn = (a && a.currency === "USD") ? c.amount * fxDe(c.date) : c.amount;
-      return { date: c.date, mxn: c.kind === "deposit" ? mxn : -mxn };
-    });
-
+  const txs = pf.txsScope || state.transactions;
   const años = [...new Set([
-    ...state.cashflows.map(c => c.date.slice(0, 4)),
-    ...state.transactions.map(t => t.date.slice(0, 4))
+    ...state.cashflows.filter(c => dentro(c.from) || (c.to && dentro(c.to))).map(c => c.date.slice(0, 4)),
+    ...txs.map(t => t.date.slice(0, 4))
   ])].sort();
 
   const filas = [];
@@ -1375,9 +1521,10 @@ function computeAnual(pf) {
     // El corte de cierre debe caer DENTRO del año; si no, un corte posterior
     // se tomaría como cierre y la ganancia saldría inflada.
     const sIni = snaps.filter(s => s.date < ini).pop();
-    const sFin = esActual ? null : snaps.filter(s => s.date <= fin && s.date.slice(0, 4) === y).pop();
-    const BV = sIni ? snapMXN(sIni) : 0;
-    const EV = esActual ? hoyMXN : (sFin ? snapMXN(sFin) : null);
+    const sFin = esActual ? null : snaps.filter(s => s.date <= fin && s.date.slice(0, 4) === y &&
+                                                     snapCubre(s, pf.dentro)).pop();
+    const BV = sIni ? snapMXN(sIni, pf.dentro) : 0;
+    const EV = esActual ? hoyMXN : (sFin ? snapMXN(sFin, pf.dentro) : null);
 
     const flujosAño = flujos.filter(f => f.date >= ini && f.date <= fin);
     const F = flujosAño.reduce((s, f) => s + f.mxn, 0);
@@ -1393,13 +1540,22 @@ function computeAnual(pf) {
 
     const ganancia = EV != null ? EV - BV - F : null;
     const base = BV + ponderado;
-    const rend = (ganancia != null && base > 0) ? (ganancia / base) * 100 : null;
+    const aportado = flujosAño.reduce((s, f) => s + (f.mxn > 0 ? f.mxn : 0), 0);
+    const retirado = flujosAño.reduce((s, f) => s + (f.mxn < 0 ? -f.mxn : 0), 0);
+    // Si casi todo el dinero llegó al final del año, la base ponderada queda
+    // minúscula y el porcentaje se dispara (una pérdida de $137 sobre una base
+    // de $42 daría -323%). En ese caso la ganancia en pesos sigue siendo válida,
+    // el porcentaje no: mejor no enseñarlo que enseñar un número absurdo.
+    const baseMinima = 0.10 * (BV + aportado);
+    const baseFiable = base > 0 && base >= baseMinima;
+    const rend = (ganancia != null && baseFiable) ? (ganancia / base) * 100 : null;
+    const rendNoFiable = ganancia != null && !baseFiable && (BV + aportado) > 0;
 
     // Realizado, rendimientos y dividendos del año
     let realizado = 0;
     const pos = {};
     const cerradas = [];
-    for (const t of [...state.transactions].sort((a, b) => a.date > b.date ? 1 : -1)) {
+    for (const t of [...txs].sort((a, b) => a.date > b.date ? 1 : -1)) {
       const k = t.account + "|" + t.ticker;
       const p = pos[k] || (pos[k] = { sh: 0, cost: 0 });
       const monto = t.qty * t.price;
@@ -1418,15 +1574,14 @@ function computeAnual(pf) {
       }
     }
     const rendimientos = state.cashflows
-      .filter(c => c.kind === "yield" && c.date.slice(0, 4) === y)
+      .filter(c => c.kind === "yield" && c.date.slice(0, 4) === y && dentro(c.from))
       .reduce((s, c) => { const a = acc(c.from); return s + (a?.currency === "USD" ? c.amount * fxRate() : c.amount); }, 0);
-    const aportado = flujosAño.reduce((s, f) => s + (f.mxn > 0 ? f.mxn : 0), 0);
-    const retirado = flujosAño.reduce((s, f) => s + (f.mxn < 0 ? -f.mxn : 0), 0);
     const convs = state.cashflows.filter(c => c.kind === "transfer" && c.amountTo > 0 &&
-      acc(c.from)?.currency === "MXN" && acc(c.to)?.currency === "USD" && c.date.slice(0, 4) === y);
-    const ops = state.transactions.filter(t => t.date.slice(0, 4) === y).length;
+      acc(c.from)?.currency === "MXN" && acc(c.to)?.currency === "USD" &&
+      c.date.slice(0, 4) === y && dentro(c.to));
+    const ops = txs.filter(t => t.date.slice(0, 4) === y).length;
 
-    filas.push({ y, BV, EV, F, aportado, retirado, ganancia, rend, realizado, rendimientos,
+    filas.push({ y, BV, EV, F, aportado, retirado, ganancia, rend, rendNoFiable, realizado, rendimientos,
                  cerradas, ops, esActual, tieneCorte: EV != null,
                  usdComprados: convs.reduce((s, c) => s + c.amountTo, 0),
                  mxnConvertidos: convs.reduce((s, c) => s + c.amount, 0) });
@@ -1450,7 +1605,9 @@ function renderAnual(pf) {
       <td>${f.aportado ? fmtMoney(f.aportado, "MXN") : "—"}</td>
       <td>${f.EV != null ? fmtMoney(f.EV, "MXN") : '<span title="Falta un corte al cierre de ese año">sin corte</span>'}</td>
       <td class="${signClass(f.ganancia ?? 0)}">${f.ganancia != null ? fmtMoney(f.ganancia, "MXN") : "—"}</td>
-      <td class="${signClass(f.rend ?? 0)}"><b>${f.rend != null ? fmtPct(f.rend) : "—"}</b></td>
+      <td class="${signClass(f.rend ?? 0)}"><b>${f.rend != null ? fmtPct(f.rend)
+        : f.rendNoFiable ? '<span class="neutral" title="Casi todo el dinero entró al final del año, así que el porcentaje no significa nada. La ganancia en pesos sí es válida.">n/d</span>'
+        : "—"}</b></td>
       <td class="${signClass(f.realizado)}">${fmtMoney(f.realizado, "MXN")}</td>
       <td>${f.ops}</td>
     </tr>`;
@@ -1468,8 +1625,10 @@ function renderAnual(pf) {
 
   document.getElementById("annualCards").innerHTML = `
     <div class="card"><div class="label">Rendimiento del año</div>
-      <div class="value ${signClass(F.rend ?? 0)}">${F.rend != null ? fmtPct(F.rend) : "—"}</div>
-      <div class="sub ${signClass(F.ganancia ?? 0)}">${F.ganancia != null ? fmtMoney(F.ganancia, "MXN") : "falta corte de cierre"}</div></div>
+      <div class="value ${signClass(F.rend ?? 0)}">${F.rend != null ? fmtPct(F.rend) : F.rendNoFiable ? "n/d" : "—"}</div>
+      <div class="sub ${signClass(F.ganancia ?? 0)}">${F.ganancia == null ? "falta corte de cierre"
+        : F.rendNoFiable ? fmtMoney(F.ganancia, "MXN") + " · el dinero entró casi al cierre, el % no es representativo"
+        : fmtMoney(F.ganancia, "MXN")}</div></div>
     <div class="card"><div class="label">Aportaste</div>
       <div class="value">${fmtMoney(F.aportado, "MXN")}</div>
       <div class="sub neutral">${F.retirado ? "retiraste " + fmtMoney(F.retirado, "MXN") : "sin retiros"}</div></div>
@@ -1500,7 +1659,7 @@ function renderAnual(pf) {
   const snaps = [...(state.history_snapshots || [])].sort((a, b) => a.date > b.date ? 1 : -1);
   document.getElementById("snapTable").innerHTML = snaps.length
     ? `<table><thead><tr><th class="left">Fecha</th><th>Patrimonio</th><th>Tipo de cambio</th><th class="left">Nota</th><th></th></tr></thead><tbody>` +
-      snaps.map(s => `<tr><td class="left">${esc(s.date)}</td><td>${fmtMoney(snapMXN(s), "MXN")}</td>
+      snaps.map(s => `<tr><td class="left">${esc(s.date)}</td><td>${fmtMoney(snapMXN(s, pf.dentro), "MXN")}</td>
         <td>${s.fx ? Number(s.fx).toFixed(4) : "—"}</td>
         <td class="left"><small style="color:var(--text-dim)">${esc(s.note || "")}</small></td>
         <td><button class="danger-ghost" onclick="deleteSnap('${esc(s.date)}')">🗑</button></td></tr>`).join("") + `</tbody></table>`
@@ -1516,7 +1675,7 @@ function deleteSnap(date) {
 }
 
 function guardarCorte() {
-  const pf = computePortfolio();
+  const pf = computePortfolio("all");   // un corte guarda TODAS las cuentas
   const cuentas = {};
   for (const a of state.accounts) cuentas[a.id] = +(pf.accounts[a.id]?.value || 0).toFixed(2);
   const fecha = prompt("Fecha del corte (aaaa-mm-dd). Para el cierre de un año usa el 31 de diciembre:", todayStr());
@@ -1533,9 +1692,11 @@ function guardarCorte() {
    ============================================================ */
 function computeFX(pf) {
   // Conversiones MXN -> USD (transferencias entre cuentas de distinta moneda)
+  const dentro = pf.dentro || (() => true);
   const convs = state.cashflows
     .filter(c => c.kind === "transfer" && c.amountTo > 0 &&
-                 acc(c.from)?.currency === "MXN" && acc(c.to)?.currency === "USD")
+                 acc(c.from)?.currency === "MXN" && acc(c.to)?.currency === "USD" &&
+                 dentro(c.to))
     .map(c => ({ date: c.date, mxn: Number(c.amount), usd: Number(c.amountTo),
                  rate: Number(c.amount) / Number(c.amountTo), note: c.note || "" }))
     .sort((a, b) => a.date > b.date ? 1 : -1);
@@ -1554,7 +1715,7 @@ function computeFX(pf) {
   }
   // Dólares que entraron sin una conversión rastreada (depósitos directos en USD)
   const usdOther = state.cashflows
-    .filter(c => c.kind === "deposit" && acc(c.from)?.currency === "USD")
+    .filter(c => c.kind === "deposit" && acc(c.from)?.currency === "USD" && dentro(c.from))
     .reduce((s, c) => s + Number(c.amount), 0);
 
   const baseUsd = usdConv + usdOther;             // dólares aportados
@@ -1796,6 +1957,87 @@ function renderDiversification(pf) {
     `<div class="reco ${r.level}"><span class="icon">${r.icon}</span><div>${r.text}</div></div>`).join("");
 }
 
+/* ============================================================
+   ÁMBITO: selector, aviso y comparativa cuenta por cuenta
+   ============================================================ */
+function renderScope(pf) {
+  const sel = document.getElementById("selScope");
+  const gs = grupos();
+  let opts = `<option value="all">🌐 Todo el patrimonio</option>`;
+  if (gs.length) {
+    opts += `<optgroup label="Grupos">` + gs
+      .map(([g, list]) => `<option value="g:${esc(g)}">🏛 ${esc(g)} (${list.length} cuentas)</option>`).join("") + `</optgroup>`;
+  }
+  opts += `<optgroup label="Cuentas">` + state.accounts
+    .map(a => `<option value="${esc(a.id)}">${a.type === "cash" ? "💵" : "📈"} ${esc(a.name)}</option>`).join("") + `</optgroup>`;
+  sel.innerHTML = opts;
+  sel.value = [...sel.options].some(o => o.value === curScope()) ? curScope() : "all";
+  if (sel.value !== curScope()) state.settings.scope = "all";
+
+  const banner = document.getElementById("scopeBanner");
+  if (!pf.esParcial) { banner.innerHTML = ""; return; }
+  const n = Object.keys(pf.accounts).length;
+  banner.innerHTML = `<div class="panel" style="border-color:var(--accent);display:flex;align-items:center;
+      gap:12px;flex-wrap:wrap;padding:12px 16px;margin-bottom:14px">
+    <b style="color:var(--accent)">🔍 Viendo solo: ${esc(scopeName(pf.scope))}</b>
+    <span class="hint">${n} cuenta${n === 1 ? "" : "s"} · todas las pestañas están filtradas
+    ${pf.traspIn || pf.traspOut ? `· los traspasos desde tus otras cuentas cuentan aquí como aportación
+      (${fmtMoney(pf.traspIn)} entró, ${fmtMoney(pf.traspOut)} salió)` : ""}</span>
+    <button style="margin-left:auto" onclick="setScope('all')">← Ver todo junto</button>
+  </div>`;
+}
+
+function renderBreakdown(pf) {
+  const el = document.getElementById("breakdownTable");
+  if (state.accounts.length < 2 || (!state.transactions.length && !state.cashflows.length)) {
+    document.getElementById("breakdownPanel").style.display = "none";
+    return;
+  }
+  document.getElementById("breakdownPanel").style.display = "";
+
+  // Cada cuenta y cada grupo se calcula con su propio ámbito, así que la
+  // ganancia de cada renglón ya descuenta lo que se le traspasó desde el resto.
+  const filas = [];
+  for (const [g, list] of grupos()) {
+    filas.push({ sc: "g:" + g, label: g, grupo: true, hijos: list.length });
+    for (const a of list) filas.push({ sc: a.id, label: a.name, cur: a.currency, tipo: a.type, hijo: true });
+  }
+  const enGrupo = new Set(grupos().flatMap(([, list]) => list.map(a => a.id)));
+  for (const a of state.accounts) {
+    if (!enGrupo.has(a.id)) filas.push({ sc: a.id, label: a.name, cur: a.currency, tipo: a.type });
+  }
+
+  // El peso siempre se mide contra el patrimonio completo, aunque estés viendo una sola cuenta
+  const total = pf.esParcial ? computePortfolio("all").patrimonio : pf.patrimonio;
+  let rows = "";
+  for (const f of filas) {
+    const p = computePortfolio(f.sc);
+    const peso = total > 0 ? (p.patrimonio / total) * 100 : null;
+    const activo = curScope() === f.sc;
+    rows += `<tr class="clickable ${activo ? "row-active" : ""}" onclick="setScope('${esc(f.sc)}')"
+        title="Analizar ${esc(f.label)} por separado">
+      <td class="left" style="${f.hijo ? "padding-left:26px" : ""}">
+        ${f.grupo ? "🏛 <b>" : f.tipo === "cash" ? "💵 " : "📈 "}${esc(f.label)}${f.grupo ? "</b>" : ""}
+        ${f.cur ? `<span class="cur-badge">${f.cur}</span>` : ""}
+        ${activo ? '<span class="sector-tag">viendo</span>' : ""}</td>
+      <td><b>${fmtMoney(p.patrimonio)}</b></td>
+      <td>${peso != null ? peso.toFixed(1) + "%" : "—"}</td>
+      <td>${fmtMoney(p.aportadoNeto)}</td>
+      <td class="${signClass(p.ganancia)}">${fmtMoney(p.ganancia)}</td>
+      <td class="${signClass(p.ganancia)}"><b>${fmtPct(p.gananciaPct)}</b></td>
+      <td class="${signClass(p.totalDayChange)}">${p.totalDayChange ? fmtMoney(p.totalDayChange) : "—"}</td>
+    </tr>`;
+  }
+  el.innerHTML = `<table><thead><tr>
+      <th class="left">Cuenta</th><th>Valor hoy</th><th>% del total</th>
+      <th>Aportado neto</th><th>Ganancia</th><th>Rend.</th><th>Hoy</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    <div class="muted-note">El <b>aportado neto</b> de cada renglón incluye lo que le llegó desde tus otras
+    cuentas (por ejemplo, lo que Smart Cash le pasó a Trading USA), para que su rendimiento mida solo lo que
+    esa cuenta hizo con el dinero. Por eso los renglones no suman el total de arriba: el mismo peso puede
+    haber pasado por varias cuentas.</div>`;
+}
+
 function renderSelectors() {
   const brokerOpts = state.accounts.filter(a => a.type === "broker")
     .map(a => `<option value="${a.id}">${esc(a.name)} (${a.currency})</option>`).join("");
@@ -1850,7 +2092,7 @@ function deleteCashflow(id) {
 function actualizarSaldo(id) {
   const a = acc(id);
   if (!a) return;
-  const pf = computePortfolio();
+  const pf = computePortfolio("all");
   const actual = pf.accounts[id]?.value || 0;
   const txt = prompt(
     `${a.name}: ¿cuánto tienes hoy?\n\n` +
@@ -2073,7 +2315,7 @@ document.getElementById("txForm").addEventListener("submit", e => {
   const type = document.getElementById("fType").value;
 
   if (type === "sell") {
-    const pf = computePortfolio();
+    const pf = computePortfolio("all");
     const p = pf.positions.find(x => x.ticker === ticker && x.account === account);
     const held = p ? p.shares : 0;
     if (qty > held + 1e-9 && !confirm(`Solo tienes ${fmtNum(held)} de ${ticker} en esa cuenta. ¿Registrar la venta de todos modos?`)) return;
@@ -2203,6 +2445,13 @@ document.getElementById("importAccount").addEventListener("change", e => {
   document.getElementById("chkMx").checked = a?.currency === "MXN";
 });
 
+// ---- Ámbito de análisis ----
+document.getElementById("selScope").addEventListener("change", e => {
+  setScope(e.target.value);
+  toast(e.target.value === "all" ? "Viendo todo el patrimonio 🌐"
+                                 : "Viendo solo " + scopeName(e.target.value) + " 🔍");
+});
+
 // ---- Moneda de visualización ----
 document.getElementById("selCurrency").addEventListener("change", e => {
   state.settings.currency = e.target.value;
@@ -2242,7 +2491,7 @@ document.getElementById("fileImport").addEventListener("change", e => {
         accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
         transactions: [], cashflows: [], prices: {},
         fx: { rate: 18.5, updatedAt: null, manual: true },
-        history: [], history_snapshots: [], settings: { currency: "MXN" }
+        history: [], history_snapshots: [], settings: { currency: "MXN", scope: "all" }
       };
       loadState();
       saveState();
