@@ -81,6 +81,27 @@ AES-256-GCM con llave derivada por PBKDF2-SHA256. La llave vive solo en la varia
 - Web Crypto funciona en `file://` (es contexto seguro); si no hubiera, la app avisa y
   guarda en claro.
 
+## Respaldo en la nube (`state.sync`)
+
+Sube el **mismo sobre cifrado** a un repositorio **privado** de GitHub vía la Contents API
+(`GET`/`PUT /repos/{owner}/{repo}/contents/{path}`), con `fetch` directo — la API manda
+`Access-Control-Allow-Origin: *`, así que funciona hasta desde `file://`. Cada subida es un
+commit, de modo que el historial del repo permite volver a los datos de cualquier día.
+
+```js
+state.sync = { owner, repo, path, token, branch, sha, ultima, auto }
+```
+
+- **El token nunca sale del dispositivo**: `contenidoParaSubir()` recorta `sync` antes de
+  subir, y `aplicarDeNube()` conserva el `sync` local en vez del que venga en el archivo.
+- Requiere un token *fine-grained* con `Contents: Read and write` sobre ese único repo.
+- **Conflictos**: se compara el `sha` de la nube con el último que vio este dispositivo. Si
+  no coinciden no se sube nada — se muestra `#nubeAviso` con las dos salidas explícitas
+  (bajar la de la nube o forzar la de aquí). Nunca se pisa en silencio.
+- La subida automática va con rebote de 8 s desde `saveState()`; `aplicandoNube` evita que
+  bajar dispare una subida.
+- Al conectar se avisa si el repo resulta ser público.
+
 ## Ámbito de análisis (`settings.scope`)
 
 El selector del encabezado recorta **toda** la app: dashboard, posiciones, operaciones,

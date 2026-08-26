@@ -260,6 +260,7 @@
     <button class="tab" data-tab="diversification">🎯 Diversificación</button>
   </div>
 
+  <div id="nubeAviso"></div>
   <div id="scopeBanner"></div>
 
   <!-- ================= DASHBOARD ================= -->
@@ -308,6 +309,11 @@
     <div class="panel">
       <h3>🔐 Seguridad de tus datos</h3>
       <div id="secPanel"></div>
+    </div>
+
+    <div class="panel">
+      <h3>☁️ Respaldo en la nube <span class="hint">(repositorio privado de GitHub)</span></h3>
+      <div id="nubePanel"></div>
     </div>
 
     <div class="panel">
@@ -600,6 +606,7 @@ let state = {
   fx: { rate: 18.50, updatedAt: null, manual: true },  // pesos por dólar
   history: [],        // {date, valueMXN, aportMXN}
   history_snapshots: [],  // {date, accounts:{id:valor}, fx, note} — cortes de patrimonio
+  sync: null,         // { owner, repo, path, token, branch, sha, ultima, auto } — nunca se sube
   settings: { currency: "MXN", scope: "all" }   // scope: "all" | "g:<grupo>" | <id de cuenta>
 };
 
@@ -640,10 +647,12 @@ async function cifrarSobre(texto, ses) {
            salt: aB64(ses.salt), iv: aB64(iv), ct: aB64(ct) };
 }
 
-// Devuelve { texto, sesion } o lanza si la contraseña no es la correcta
-async function abrirSobre(sobre, pass) {
+// Devuelve { texto, sesion } o lanza si la contraseña no es la correcta.
+// Con `ses` intenta reusar una sesión ya abierta (funciona si el sobre lo
+// cifró este mismo dispositivo, que comparte la sal).
+async function abrirSobre(sobre, pass, ses) {
   const salt = deB64(sobre.salt), iter = Number(sobre.iter) || KDF_ITER;
-  const key = await derivarClave(pass, salt, iter);
+  const key = ses ? ses.key : await derivarClave(pass, salt, iter);
   let plano;
   try {
     plano = await crypto.subtle.decrypt({ name: "AES-GCM", iv: deB64(sobre.iv) }, key, deB64(sobre.ct));
@@ -668,6 +677,7 @@ function loadState(p) {
     state.cashflows = Array.isArray(p.cashflows) ? p.cashflows : [];
     state.prices = p.prices && typeof p.prices === "object" ? p.prices : {};
     state.settings = { currency: "MXN", scope: "all", ...(p.settings || {}) };
+    state.sync = p.sync && p.sync.token ? p.sync : null;
     state.history_snapshots = Array.isArray(p.history_snapshots) ? p.history_snapshots : [];
     state.fx = p.fx && p.fx.rate ? p.fx : state.fx;
     state.accounts = Array.isArray(p.accounts) && p.accounts.length ? p.accounts : JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS));
@@ -691,6 +701,7 @@ function loadState(p) {
 let colaGuardado = Promise.resolve(), guardadoPendiente = false;
 
 function saveState() {
+  programarSubida();
   if (!sesion) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); return; }
   if (guardadoPendiente) return;
   guardadoPendiente = true;
@@ -1277,6 +1288,7 @@ function renderAll() {
   renderScope(pf);
   renderBreakdown(pf);
   renderSeguridad();
+  renderNube();
   const anyPrice = Object.values(state.prices).map(p => p.updatedAt).filter(Boolean).sort().pop();
   document.getElementById("lastUpdate").textContent =
     anyPrice ? "Últ. act: " + new Date(anyPrice).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" }) : "";
@@ -2145,6 +2157,281 @@ function renderBreakdown(pf) {
 }
 
 /* ============================================================
+   RESPALDO EN LA NUBE (repositorio privado de GitHub)
+   Se sube el MISMO sobre cifrado que se guarda en el navegador, así que
+   GitHub solo ve un bloque ilegible. El token se queda en este dispositivo:
+   vive en state.sync (que se cifra con todo lo demás) y se recorta antes
+   de subir, para que la copia de la nube nunca lo contenga.
+   Cada subida es un commit, así que queda el historial de todos tus cambios.
+   ============================================================ */
+const GH_API = "https://api.github.com";
+let aplicandoNube = false;      // evita que bajar dispare una subida
+let subidaProgramada = null;
+
+const aB64Texto = t => aB64(new TextEncoder().encode(t));
+const deB64Texto = b => new TextDecoder().decode(deB64(String(b).replace(/\s/g, "")));
+
+function explicarGh(status, msg) {
+  if (status === 401) return "El token no sirve o ya venció. Genera uno nuevo y vuelve a conectar.";
+  if (status === 403) return "El token no tiene permiso de escritura. Necesita «Contents: Read and write» sobre ese repositorio.";
+  if (status === 404) return "No encuentro ese repositorio. Revisa el usuario y el nombre, y que el token tenga acceso.";
+  if (status === 409) return "CONFLICTO";
+  return `GitHub respondió ${status}${msg ? ": " + msg : ""}`;
+}
+
+async function ghFetch(ruta, opciones = {}) {
+  const s = state.sync || {};
+  let r;
+  try {
+    r = await fetch(GH_API + ruta, {
+      ...opciones,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        Authorization: "Bearer " + s.token,
+        ...(opciones.body ? { "Content-Type": "application/json" } : {}),
+      },
+    });
+  } catch { throw new Error("No hubo conexión con GitHub. Revisa tu internet."); }
+  if (r.status === 404 && opciones.permitir404) return null;
+  if (!r.ok) {
+    let msg = "";
+    try { msg = (await r.json()).message || ""; } catch { /* sin cuerpo */ }
+    throw new Error(explicarGh(r.status, msg));
+  }
+  return r.status === 204 ? null : r.json();
+}
+
+const rutaArchivo = () => {
+  const s = state.sync;
+  return `/repos/${encodeURIComponent(s.owner)}/${encodeURIComponent(s.repo)}/contents/${s.path
+    .split("/").map(encodeURIComponent).join("/")}`;
+};
+
+// Metadatos del archivo en la nube (o null si todavía no existe)
+async function nubeMeta() {
+  return ghFetch(rutaArchivo() + "?ref=" + encodeURIComponent(state.sync.branch || "main"), { permitir404: true });
+}
+
+// Lo que se sube: todo menos la configuración de sincronización (que lleva el token)
+async function contenidoParaSubir() {
+  const copia = { ...state };
+  delete copia.sync;
+  const texto = JSON.stringify(copia);
+  return sesion ? JSON.stringify(await cifrarSobre(texto, sesion), null, 2) : JSON.stringify(copia, null, 2);
+}
+
+async function nubeSubir({ silencioso = false, forzar = false } = {}) {
+  const s = state.sync;
+  if (!s || !s.token) return;
+  try {
+    const meta = await nubeMeta();
+    // Si la nube cambió desde la última vez que este dispositivo la vio, no la pisamos
+    if (meta && s.sha && meta.sha !== s.sha && !forzar) {
+      renderNubeAviso("conflicto");
+      if (!silencioso) toast("⚠️ La copia de la nube cambió desde otro dispositivo. Revisa el aviso de arriba.", 6000);
+      return;
+    }
+    const cuerpo = {
+      message: `Respaldo ${new Date().toISOString().slice(0, 16).replace("T", " ")}`,
+      content: aB64Texto(await contenidoParaSubir()),
+      ...(s.branch ? { branch: s.branch } : {}),
+      ...(meta ? { sha: meta.sha } : {}),
+    };
+    const res = await ghFetch(rutaArchivo(), { method: "PUT", body: JSON.stringify(cuerpo) });
+    s.sha = res.content.sha;
+    s.ultima = new Date().toISOString();
+    s.error = null;
+    saveState();
+    renderNubeAviso(null);
+    renderNube();
+    if (!silencioso) toast("☁️ Respaldo subido a GitHub");
+  } catch (e) {
+    s.error = e.message;
+    renderNube();
+    if (!silencioso) toast("❌ " + e.message, 6000);
+  }
+}
+
+async function nubeBajar() {
+  const s = state.sync;
+  if (!s || !s.token) return;
+  if (!confirm("Se reemplazarán los datos de este dispositivo con la copia de la nube.\n\n¿Continuar?")) return;
+  try {
+    const res = await nubeMeta();
+    if (!res) { toast("Todavía no hay ningún respaldo en la nube."); return; }
+    const detalle = res.content ? res : await ghFetch(rutaArchivo());
+    const datos = JSON.parse(deB64Texto(detalle.content));
+    if (esSobre(datos)) {
+      if (!sesion) { mostrarCandado("nube", { sobre: datos, sha: detalle.sha }); return; }
+      try {
+        const { texto } = await abrirSobre(datos, null, sesion);   // intenta con la sesión abierta
+        aplicarDeNube(JSON.parse(texto), detalle.sha);
+      } catch { mostrarCandado("nube", { sobre: datos, sha: detalle.sha }); }
+      return;
+    }
+    aplicarDeNube(datos, detalle.sha);
+  } catch (e) { toast("❌ " + e.message, 6000); }
+}
+
+function aplicarDeNube(datos, sha) {
+  aplicandoNube = true;
+  const sync = { ...state.sync, sha, ultima: new Date().toISOString(), error: null };
+  aplicarRespaldo(datos);        // reinicia el estado y vuelve a guardar
+  state.sync = sync;             // la configuración es de este dispositivo, no de la nube
+  saveState();
+  aplicandoNube = false;
+  renderNubeAviso(null);
+  renderAll();
+  toast("☁️ Datos bajados de la nube");
+}
+
+// Al abrir: ¿la nube tiene algo más nuevo que lo que este dispositivo vio?
+async function nubeRevisar() {
+  const s = state.sync;
+  if (!s || !s.token) return;
+  try {
+    const meta = await nubeMeta();
+    if (meta && s.sha && meta.sha !== s.sha) renderNubeAviso("nueva");
+    else if (!meta) renderNubeAviso(null);
+  } catch { /* sin conexión: no molestamos */ }
+}
+
+function programarSubida() {
+  if (!state.sync?.auto || !state.sync.token || aplicandoNube) return;
+  clearTimeout(subidaProgramada);
+  subidaProgramada = setTimeout(() => nubeSubir({ silencioso: true }), 8000);
+}
+
+function renderNubeAviso(tipo) {
+  const el = document.getElementById("nubeAviso");
+  if (!tipo) { el.innerHTML = ""; return; }
+  const textos = {
+    nueva: ["var(--accent)", "☁️ Hay una versión más nueva en la nube",
+      "Otro dispositivo subió cambios después de la última vez que este bajó.",
+      `<button onclick="nubeBajar()">⬇ Bajar la de la nube</button>
+       <button onclick="nubeSubir({forzar:true})">⬆ Subir la de aquí y reemplazarla</button>`],
+    conflicto: ["var(--yellow)", "⚠️ La nube cambió y no se subió nada",
+      "Para no borrar lo que hizo el otro dispositivo, esta subida se detuvo. Elige cuál se queda.",
+      `<button onclick="nubeBajar()">⬇ Quedarme con la de la nube</button>
+       <button onclick="nubeSubir({forzar:true})">⬆ Quedarme con la de aquí</button>`],
+  };
+  const [color, titulo, sub, botones] = textos[tipo];
+  el.innerHTML = `<div class="panel" style="border-color:${color};padding:12px 16px;margin-bottom:14px">
+    <b style="color:${color}">${titulo}</b>
+    <div class="hint" style="margin:4px 0 10px">${sub}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">${botones}
+      <button class="danger-ghost" style="margin-left:auto" onclick="renderNubeAviso(null)">Ahora no</button></div>
+  </div>`;
+}
+
+async function conectarNube() {
+  const owner = document.getElementById("ghOwner").value.trim();
+  const repo = document.getElementById("ghRepo").value.trim();
+  const token = document.getElementById("ghToken").value.trim();
+  const path = document.getElementById("ghPath").value.trim() || "portafolio.json";
+  if (!owner || !repo || !token) { toast("Faltan el usuario, el repositorio o el token."); return; }
+
+  const previo = state.sync;
+  state.sync = { owner, repo, path, token, branch: "", sha: null, ultima: null, auto: true, error: null };
+  try {
+    const info = await ghFetch(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+    state.sync.branch = info.default_branch || "main";
+    if (!info.private) {
+      if (!confirm(`⚠️ El repositorio "${owner}/${repo}" es PÚBLICO.\n\n` +
+                   (sesion ? "Tu respaldo va cifrado, así que no se puede leer, pero cualquiera podría descargarlo.\n\n"
+                           : "Y NO tienes contraseña puesta: tu portafolio quedaría a la vista de todo el mundo.\n\n") +
+                   "¿Aun así quieres usarlo?")) { state.sync = previo; renderNube(); return; }
+    }
+    if (!info.permissions?.push) throw new Error(explicarGh(403, ""));
+    const meta = await nubeMeta();
+    if (meta) {
+      state.sync.sha = meta.sha;
+      saveState(); renderNube();
+      toast("✅ Conectado. Ya había un respaldo ahí: usa ⬇ Bajar si quieres traerlo.", 6000);
+      renderNubeAviso("nueva");
+      return;
+    }
+    saveState();
+    await nubeSubir();
+    renderNube();
+  } catch (e) {
+    state.sync = previo;
+    renderNube();
+    toast("❌ " + e.message, 7000);
+  }
+}
+
+function desconectarNube() {
+  if (!confirm("¿Desconectar el respaldo?\n\nSe borra el token de este dispositivo. " +
+               "Lo que ya está en GitHub se queda ahí.")) return;
+  state.sync = null;
+  saveState();
+  renderNubeAviso(null);
+  renderNube();
+  toast("Respaldo en la nube desconectado");
+}
+
+function setNubeAuto(v) {
+  state.sync.auto = !!v;
+  saveState();
+  toast(v ? "Se subirá solo después de cada cambio" : "Ahora tendrás que subir a mano");
+}
+
+function renderNube() {
+  const el = document.getElementById("nubePanel");
+  const s = state.sync;
+  if (s && s.token) {
+    const cuando = s.ultima ? new Date(s.ultima).toLocaleString("es-MX",
+      { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "todavía no";
+    el.innerHTML = `
+      <div class="metric-row"><span>Repositorio</span><span><b>${esc(s.owner)}/${esc(s.repo)}</b> · ${esc(s.path)}</span></div>
+      <div class="metric-row"><span>Última subida</span><span>${esc(cuando)}</span></div>
+      <div class="metric-row"><span>Contenido</span><span class="${sesion ? "pos" : ""}">${sesion
+        ? "🔒 cifrado — GitHub no puede leerlo" : "⚠️ sin cifrar — ponle contraseña arriba"}</span></div>
+      ${s.error ? `<div class="metric-row"><span>Último error</span><span class="neg">${esc(s.error)}</span></div>` : ""}
+      <div class="metric-row"><span>Subir solo tras cada cambio</span>
+        <input type="checkbox" style="width:auto" ${s.auto ? "checked" : ""} onchange="setNubeAuto(this.checked)"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+        <button class="primary" onclick="nubeSubir()">⬆ Subir ahora</button>
+        <button onclick="nubeBajar()">⬇ Bajar de la nube</button>
+        <a href="https://github.com/${esc(s.owner)}/${esc(s.repo)}/commits/${esc(s.branch || "main")}/${esc(s.path)}"
+           target="_blank" rel="noopener"><button>🕘 Ver el historial</button></a>
+        <button class="danger-ghost" onclick="desconectarNube()">Desconectar</button>
+      </div>
+      <div class="muted-note">Cada subida es un commit, así que en «Ver el historial» puedes recuperar
+        cómo estaban tus datos cualquier día. El token vive solo en este dispositivo y nunca se sube.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="muted-note" style="margin:0 0 14px">
+      Sube una copia cifrada a un repositorio <b>privado</b> tuyo. Así tus datos sobreviven aunque limpies
+      el navegador o cambies de computadora, y queda el historial de cada cambio. Pasos:
+      <ol style="margin:8px 0 0 18px;line-height:1.8">
+        <li>Crea un repositorio <b>privado</b> vacío en
+          <a href="https://github.com/new" target="_blank" rel="noopener">github.com/new</a>
+          (por ejemplo <code>alfoninvest-datos</code>). No le pongas README.</li>
+        <li>Genera un token en
+          <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">
+          Settings → Personal access tokens → Fine-grained</a>:
+          en <i>Repository access</i> elige <b>Only select repositories</b> → ese repo, y en
+          <i>Permissions → Repository permissions</i> pon <b>Contents: Read and write</b>. Nada más.</li>
+        <li>Copia el token (empieza con <code>github_pat_</code>) y pégalo aquí abajo.</li>
+      </ol>
+    </div>
+    <div class="form-grid">
+      <div><label>Tu usuario de GitHub</label><input id="ghOwner" placeholder="alfongmp-ship-it"></div>
+      <div><label>Repositorio privado</label><input id="ghRepo" placeholder="alfoninvest-datos"></div>
+      <div><label>Archivo</label><input id="ghPath" value="portafolio.json"></div>
+      <div style="grid-column:1/-1"><label>Token de acceso</label>
+        <input id="ghToken" type="password" placeholder="github_pat_..." autocomplete="off"></div>
+    </div>
+    <button class="primary" style="margin-top:12px" onclick="conectarNube()">☁️ Conectar y subir</button>
+    <div class="muted-note">El token se guarda solo en este dispositivo (cifrado, si pusiste contraseña) y
+      nunca se incluye en lo que se sube. Si algún día lo pierdes, bórralo en GitHub y genera otro.</div>`;
+}
+
+/* ============================================================
    CANDADO: pantalla de contraseña, bloqueo y panel de seguridad
    ============================================================ */
 let modoCandado = null;   // "abrir" | "crear" | "cambiar" | "importar"
@@ -2161,6 +2448,8 @@ function mostrarCandado(modo, ctx) {
                "Se volverán a cifrar todos tus datos con la nueva contraseña. Los respaldos que ya exportaste siguen abriéndose con la anterior."],
     importar: ["Ese respaldo está cifrado. Escribe la contraseña con la que se creó.", "Restaurar", false,
                "Es la contraseña que tenías cuando exportaste ese archivo, que puede no ser la de hoy."],
+    nube:     ["La copia de la nube está cifrada. Escribe su contraseña.", "Bajar", false,
+               "Es la contraseña con la que se cifró en el dispositivo que la subió."],
   };
   const [msg, btn, doble, ayuda] = textos[modo];
   document.getElementById("lockMsg").textContent = msg;
@@ -2199,8 +2488,13 @@ async function enviarCandado(e) {
   await new Promise(r => setTimeout(r, 20));   // deja pintar el botón antes de derivar
 
   try {
-    if (modoCandado === "abrir" || modoCandado === "importar") {
-      const { texto, sesion: ses } = await abrirSobre(ctxCandado, pass);
+    const ctx = ctxCandado;                  // ocultarCandado() lo borra
+    if (modoCandado === "nube") {
+      const { texto } = await abrirSobre(ctx.sobre, pass);
+      ocultarCandado();
+      aplicarDeNube(JSON.parse(texto), ctx.sha);
+    } else if (modoCandado === "abrir" || modoCandado === "importar") {
+      const { texto, sesion: ses } = await abrirSobre(ctx, pass);
       const datos = JSON.parse(texto);
       if (modoCandado === "abrir") {
         sesion = ses;
@@ -2738,14 +3032,16 @@ document.getElementById("btnExport").addEventListener("click", async () => {
 
 // Reemplaza el estado con los datos de un respaldo ya descifrado
 function aplicarRespaldo(data) {
+  const sync = state.sync;          // la conexión a la nube es de este dispositivo
   state = {
     version: 2,
     accounts: JSON.parse(JSON.stringify(DEFAULT_ACCOUNTS)),
     transactions: [], cashflows: [], prices: {},
     fx: { rate: 18.5, updatedAt: null, manual: true },
-    history: [], history_snapshots: [], settings: { currency: "MXN", scope: "all" }
+    history: [], history_snapshots: [], sync: null, settings: { currency: "MXN", scope: "all" }
   };
   loadState(data);
+  state.sync = sync;
   saveState();
   renderAll();
 }
@@ -2782,6 +3078,7 @@ function arrancarApp() {
   const ia = acc(document.getElementById("importAccount").value);
   document.getElementById("chkMx").checked = ia?.currency === "MXN";
   reiniciarBloqueo();
+  nubeRevisar();
   if (state.transactions.length || state.cashflows.length) refreshPrices(true);
 }
 
